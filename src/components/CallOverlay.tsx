@@ -10,6 +10,8 @@ import {
   Phone,
   PhoneOff,
   RotateCcw,
+  Settings,
+  Sparkles,
   Video as VideoIcon,
   VideoOff,
 } from "lucide-react";
@@ -41,6 +43,8 @@ type SignalPayload = {
   audioMuted?: boolean;
   videoOff?: boolean;
   screenSharing?: boolean;
+  quality?: "auto" | "720p" | "1080p" | "2k";
+  beautyMode?: "off" | "soft" | "strong";
 };
 
 interface CallOverlayProps {
@@ -65,12 +69,26 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>("");
+  const [videoQuality, setVideoQuality] = useState<"auto" | "720p" | "1080p" | "2k">("auto");
+  const [beautyMode, setBeautyMode] = useState<"off" | "soft" | "strong">("off");
+  const [remoteQuality, setRemoteQuality] = useState<"auto" | "720p" | "1080p" | "2k" | undefined>();
+  const [remoteBeautyMode, setRemoteBeautyMode] = useState<"off" | "soft" | "strong" | undefined>();
+  const [localResolution, setLocalResolution] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const cameraVideoTrackRef = useRef<MediaStreamTrack | null>(null);
+  const isScreenSharingRef = useRef(false);
+
+  const beautyCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const beautyAnimationRef = useRef<number | null>(null);
+  const beautyStreamRef = useRef<MediaStream | null>(null);
+  const beautyTrackRef = useRef<MediaStreamTrack | null>(null);
+  const beautyVideoRef = useRef<HTMLVideoElement | null>(null);
+
   const pendingOffersRef = useRef<Map<string, SignalPayload>>(new Map());
   const peerUserIdRef = useRef<string | null>(null);
   const connectedAtRef = useRef<number | null>(null);
@@ -101,6 +119,24 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     screenStreamRef.current = screenStream;
   }, [screenStream]);
 
+  useEffect(() => {
+    isScreenSharingRef.current = isScreenSharing;
+  }, [isScreenSharing]);
+
+  useEffect(() => {
+    const updateResolution = () => {
+      const track = localStreamRef.current?.getVideoTracks()[0] || cameraVideoTrackRef.current;
+      const settings = track?.getSettings();
+      if (settings?.width && settings?.height) {
+        setLocalResolution(`${settings.width}×${settings.height}`);
+      } else {
+        setLocalResolution("");
+      }
+    };
+    const interval = window.setInterval(updateResolution, 2000);
+    return () => clearInterval(interval);
+  }, [localStream, videoQuality]);
+
   const clearTimers = () => {
     timeoutRefs.current.forEach((id) => window.clearTimeout(id));
     timeoutRefs.current = [];
@@ -114,12 +150,24 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     stream?.getTracks().forEach((track) => track.stop());
   };
 
+  const stopBeauty = () => {
+    if (beautyAnimationRef.current) cancelAnimationFrame(beautyAnimationRef.current);
+    beautyAnimationRef.current = null;
+    if (beautyVideoRef.current) {
+      beautyVideoRef.current.srcObject = null;
+    }
+    stopTracks(beautyStreamRef.current);
+    beautyStreamRef.current = null;
+    beautyTrackRef.current = null;
+  };
+
   const resetState = () => {
     clearTimers();
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
     }
+    stopBeauty();
     stopTracks(screenStreamRef.current);
     stopTracks(localStreamRef.current);
     localStreamRef.current = null;
@@ -140,6 +188,12 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     setIsMinimized(false);
     setIsScreenSharing(false);
     setRemoteScreenSharing(false);
+    setVideoQuality("auto");
+    setBeautyMode("off");
+    setRemoteQuality(undefined);
+    setRemoteBeautyMode("undefined" as any);
+    setLocalResolution("");
+    setShowAdvanced(false);
   };
 
   const finishAfterStatus = (status: CallStatus, message?: string) => {
@@ -198,11 +252,15 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     audioMuted = isMuted,
     videoOff = isVideoOff,
     screenSharing = isScreenSharing,
+    quality = videoQuality,
+    beauty = beautyMode
   ) => {
     emitForActiveCall("call:media-state", {
       audioMuted,
       videoOff,
       screenSharing,
+      quality,
+      beautyMode: beauty,
     });
   };
 
@@ -211,6 +269,123 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     const offer = call.offer || offerData?.offer;
     const fromUserId = offerData?.fromUserId || call.callerId;
     return offer && fromUserId ? { offer, fromUserId } : null;
+  };
+
+  const getVideoConstraints = (quality: "auto" | "720p" | "1080p" | "2k"): MediaTrackConstraints | boolean => {
+    if (quality === "2k") return { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 30, max: 30 } };
+    if (quality === "1080p") return { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } };
+    if (quality === "720p") return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } };
+    return true;
+  };
+
+  const getCameraStreamWithFallback = async (isVideo: boolean, quality: "auto" | "720p" | "1080p" | "2k") => {
+    if (!isVideo) return { stream: await navigator.mediaDevices.getUserMedia({ audio: true, video: false }), quality: "auto" as const };
+    
+    const qualityOrder = quality === "2k" ? ["2k", "1080p", "720p", "auto"] as const
+      : quality === "1080p" ? ["1080p", "720p", "auto"] as const
+      : quality === "720p" ? ["720p", "auto"] as const
+      : ["auto"] as const;
+
+    for (const q of qualityOrder) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: getVideoConstraints(q)
+        });
+        return { stream, quality: q };
+      } catch (err) {
+        console.warn("Video quality failed, trying fallback", q, err);
+      }
+    }
+    throw new Error("Could not access camera");
+  };
+
+  const tuneVideoSender = (sender: RTCRtpSender, quality: "auto" | "720p" | "1080p" | "2k") => {
+    const params = sender.getParameters();
+    if (!params.encodings) params.encodings = [{}];
+    if (!params.encodings.length) params.encodings.push({});
+
+    if (quality === "2k") {
+      params.encodings[0].maxBitrate = 6000000;
+      params.encodings[0].maxFramerate = 30;
+    } else if (quality === "1080p") {
+      params.encodings[0].maxBitrate = 3500000;
+      params.encodings[0].maxFramerate = 30;
+    } else if (quality === "720p") {
+      params.encodings[0].maxBitrate = 1800000;
+      params.encodings[0].maxFramerate = 30;
+    } else {
+       delete params.encodings[0].maxBitrate;
+       delete params.encodings[0].maxFramerate;
+    }
+    sender.setParameters(params).catch(console.error);
+  };
+
+  const applyBeautyMode = (mode: "off" | "soft" | "strong", srcTrack: MediaStreamTrack | null = cameraVideoTrackRef.current) => {
+    if (beautyAnimationRef.current) {
+      cancelAnimationFrame(beautyAnimationRef.current);
+      beautyAnimationRef.current = null;
+    }
+    if (mode === "off" || !srcTrack || isScreenSharingRef.current) {
+      return srcTrack;
+    }
+
+    if (!beautyCanvasRef.current) beautyCanvasRef.current = document.createElement("canvas");
+    const canvas = beautyCanvasRef.current;
+    let ctx = canvas.getContext("2d");
+    if (!ctx) return srcTrack;
+
+    if (!beautyVideoRef.current) {
+      beautyVideoRef.current = document.createElement("video");
+      beautyVideoRef.current.autoplay = true;
+      beautyVideoRef.current.playsInline = true;
+      beautyVideoRef.current.muted = true;
+    }
+    const hiddenVideo = beautyVideoRef.current;
+    
+    const currentStream = hiddenVideo.srcObject as MediaStream | null;
+    if (!currentStream || currentStream.getVideoTracks()[0] !== srcTrack) {
+        hiddenVideo.srcObject = new MediaStream([srcTrack]);
+    }
+
+    let isPlaying = false;
+    hiddenVideo.onloadedmetadata = () => {
+        canvas.width = hiddenVideo.videoWidth;
+        canvas.height = hiddenVideo.videoHeight;
+        hiddenVideo.play().then(() => { isPlaying = true; }).catch(console.error);
+        
+        ctx!.filter = mode === "soft"
+          ? "brightness(1.06) contrast(1.03) saturate(1.08) blur(0.25px)"
+          : "brightness(1.10) contrast(1.05) saturate(1.12) blur(0.45px)";
+        
+        const drawLoop = () => {
+            if (isPlaying && hiddenVideo.videoWidth > 0 && hiddenVideo.videoHeight > 0) {
+                if (canvas.width !== hiddenVideo.videoWidth) canvas.width = hiddenVideo.videoWidth;
+                if (canvas.height !== hiddenVideo.videoHeight) canvas.height = hiddenVideo.videoHeight;
+                ctx!.drawImage(hiddenVideo, 0, 0, canvas.width, canvas.height);
+            }
+            beautyAnimationRef.current = requestAnimationFrame(drawLoop);
+        };
+        drawLoop();
+    };
+
+    if (!beautyStreamRef.current || !beautyTrackRef.current || beautyTrackRef.current.readyState === 'ended') {
+        try {
+            if ('captureStream' in canvas) {
+                beautyStreamRef.current = (canvas as any).captureStream(30);
+                beautyTrackRef.current = beautyStreamRef.current!.getVideoTracks()[0];
+            } else {
+                throw new Error("captureStream not supported");
+            }
+        } catch (e) {
+            console.error("Canvas captureStream not supported", e);
+            setHasError("Beauty filter is not supported on this device.");
+            setTimeout(() => setHasError(""), 3000);
+            return srcTrack;
+        }
+    }
+    
+    return beautyTrackRef.current || srcTrack;
   };
 
   const refreshVideoInputs = async () => {
@@ -419,6 +594,8 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       if (typeof data.screenSharing === "boolean") {
         setRemoteScreenSharing(data.screenSharing);
       }
+      if (data.quality) setRemoteQuality(data.quality);
+      if (data.beautyMode) setRemoteBeautyMode(data.beautyMode);
     };
 
     const handleDisconnect = () => {
@@ -481,19 +658,28 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         setIsMinimized(false);
         setCallStatus("outgoing_calling");
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: isVideo,
-        });
-        localStreamRef.current = stream;
-        cameraVideoTrackRef.current = stream.getVideoTracks()[0] || null;
-        setLocalStream(stream);
-        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-        void refreshVideoInputs();
-
         const pc = new RTCPeerConnection(ICE_SERVERS);
         pcRef.current = pc;
-        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+        
+        const { stream: obtainedStream, quality: obtainedQuality } = await getCameraStreamWithFallback(isVideo, videoQuality);
+        const cameraTrack = obtainedStream.getVideoTracks()[0] || null;
+        localStreamRef.current = obtainedStream;
+        cameraVideoTrackRef.current = cameraTrack;
+        setVideoQuality(obtainedQuality);
+        
+        const finalVideoTrack = applyBeautyMode(beautyMode, cameraTrack);
+        const audioTracks = obtainedStream.getAudioTracks();
+        
+        setLocalStream(obtainedStream);
+        if (localVideoRef.current) localVideoRef.current.srcObject = obtainedStream;
+        void refreshVideoInputs();
+
+        audioTracks.forEach((track) => pc.addTrack(track, obtainedStream));
+        if (finalVideoTrack) {
+           const sender = pc.addTrack(finalVideoTrack, obtainedStream);
+           tuneVideoSender(sender, obtainedQuality);
+        }
+
         attachPeerHandlers(pc, call);
 
         const offer = await pc.createOffer();
@@ -647,19 +833,28 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         toUserId: offerData.fromUserId,
       });
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: incomingCall.isVideo,
-      });
-      localStreamRef.current = stream;
-      cameraVideoTrackRef.current = stream.getVideoTracks()[0] || null;
-      setLocalStream(stream);
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-      void refreshVideoInputs();
-
       const pc = new RTCPeerConnection(ICE_SERVERS);
       pcRef.current = pc;
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+      const { stream: obtainedStream, quality: obtainedQuality } = await getCameraStreamWithFallback(incomingCall.isVideo, videoQuality);
+      const cameraTrack = obtainedStream.getVideoTracks()[0] || null;
+      localStreamRef.current = obtainedStream;
+      cameraVideoTrackRef.current = cameraTrack;
+      setVideoQuality(obtainedQuality);
+      
+      const finalVideoTrack = applyBeautyMode(beautyMode, cameraTrack);
+      const audioTracks = obtainedStream.getAudioTracks();
+
+      setLocalStream(obtainedStream);
+      if (localVideoRef.current) localVideoRef.current.srcObject = obtainedStream;
+      void refreshVideoInputs();
+
+      audioTracks.forEach((track) => pc.addTrack(track, obtainedStream));
+      if (finalVideoTrack) {
+         const sender = pc.addTrack(finalVideoTrack, obtainedStream);
+         tuneVideoSender(sender, obtainedQuality);
+      }
+
       attachPeerHandlers(pc, incomingCall);
 
       await pc.setRemoteDescription(new RTCSessionDescription(offerData.offer));
@@ -766,8 +961,10 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       const sender = findVideoSender();
       if (sender) {
         await sender.replaceTrack(screenVideoTrack);
+        tuneVideoSender(sender, "1080p");
       } else if (pcRef.current) {
-        pcRef.current.addTrack(screenVideoTrack, displayStream);
+        const sender2 = pcRef.current.addTrack(screenVideoTrack, displayStream);
+        tuneVideoSender(sender2, "1080p");
       }
 
       stopTracks(screenStreamRef.current);
@@ -794,7 +991,9 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       const cameraTrack = cameraVideoTrackRef.current;
       const sender = findVideoSender();
       if (sender && cameraTrack && !isVideoOff) {
-        await sender.replaceTrack(cameraTrack);
+        const trackToUse = applyBeautyMode(beautyMode, cameraTrack);
+        await sender.replaceTrack(trackToUse);
+        tuneVideoSender(sender, videoQuality);
       } else if (sender && isVideoOff) {
         await sender.replaceTrack(null);
       }
@@ -804,7 +1003,13 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       stopTracks(screenStreamRef.current);
       screenStreamRef.current = null;
       setScreenStream(null);
-      setLocalStream(localStreamRef.current);
+      
+      const originalCamTrack = cameraVideoTrackRef.current;
+      const audioTracks = localStreamRef.current?.getAudioTracks() || [];
+      const combinedStream = new MediaStream([...audioTracks, ...(originalCamTrack ? [originalCamTrack] : [])]);
+      
+      localStreamRef.current = combinedStream;
+      setLocalStream(combinedStream);
       setIsScreenSharing(false);
       emitForActiveCall("call:screen-share-stopped");
       emitMediaState(isMuted, isVideoOff, false);
@@ -822,7 +1027,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
 
     try {
       const nextStream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: nextDevice.deviceId } },
+        video: { deviceId: { exact: nextDevice.deviceId }, ...getVideoConstraints(videoQuality) as any },
         audio: false,
       });
       const nextTrack = nextStream.getVideoTracks()[0];
@@ -835,13 +1040,18 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       cameraVideoTrackRef.current = nextTrack;
       setSelectedVideoDeviceId(nextDevice.deviceId);
 
+      const trackToUse = applyBeautyMode(beautyMode, nextTrack);
+
       if (!isScreenSharing) {
         const sender = findVideoSender();
-        if (sender) await sender.replaceTrack(nextTrack);
+        if (sender) {
+            await sender.replaceTrack(trackToUse);
+            tuneVideoSender(sender, videoQuality);
+        }
       }
 
       const audioTracks = localStreamRef.current?.getAudioTracks() || [];
-      const combinedStream = new MediaStream([...audioTracks, nextTrack]);
+      const combinedStream = new MediaStream([...audioTracks, ...(nextTrack ? [nextTrack] : [])]);
       localStreamRef.current = combinedStream;
       if (!isScreenSharing) setLocalStream(combinedStream);
       oldVideoTrack?.stop();
@@ -850,6 +1060,54 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       setHasError("Could not switch camera.");
       window.setTimeout(() => setHasError(""), 3000);
     }
+  };
+
+  const switchCameraConfig = async (newQuality: "auto" | "720p" | "1080p" | "2k") => {
+      try {
+          const { stream: newStream, quality: obtainedQuality } = await getCameraStreamWithFallback(true, newQuality);
+          const newCameraTrack = newStream.getVideoTracks()[0];
+          if (!newCameraTrack) return;
+          
+          const oldCameraTrack = cameraVideoTrackRef.current;
+          cameraVideoTrackRef.current = newCameraTrack;
+          setVideoQuality(obtainedQuality);
+          
+          const trackToUse = applyBeautyMode(beautyMode, newCameraTrack);
+          
+          if (!isScreenSharing) {
+              const sender = findVideoSender();
+              if (sender) {
+                  await sender.replaceTrack(trackToUse);
+                  tuneVideoSender(sender, obtainedQuality);
+              }
+          }
+          
+          const audioTracks = localStreamRef.current?.getAudioTracks() || [];
+          const combinedStream = new MediaStream([...audioTracks, ...(newCameraTrack ? [newCameraTrack] : [])]);
+          localStreamRef.current = combinedStream;
+          if (!isScreenSharing) setLocalStream(combinedStream);
+          
+          oldCameraTrack?.stop();
+          emitMediaState(isMuted, isVideoOff, isScreenSharing, obtainedQuality, beautyMode);
+      } catch(err) {
+          console.error(err);
+          setHasError("Could not change video quality");
+          setTimeout(() => setHasError(""), 3000);
+      }
+  };
+
+  const changeBeautyMode = async (newMode: "off" | "soft" | "strong") => {
+      setBeautyMode(newMode);
+      if (!cameraVideoTrackRef.current) return;
+      
+      const trackToUse = applyBeautyMode(newMode, cameraVideoTrackRef.current);
+      
+      if (!isScreenSharing) {
+          const sender = findVideoSender();
+          if (sender) await sender.replaceTrack(trackToUse);
+      }
+      
+      emitMediaState(isMuted, isVideoOff, isScreenSharing, videoQuality, newMode);
   };
 
   const toggleFullscreen = async () => {
@@ -1108,6 +1366,13 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                 autoPlay
                 playsInline
                 muted
+                style={{
+                  filter: 
+                    beautyMode === "soft" ? "brightness(1.06) contrast(1.03) saturate(1.08) blur(0.25px)" :
+                    beautyMode === "strong" ? "brightness(1.10) contrast(1.05) saturate(1.12) blur(0.45px)" :
+                    "none",
+                  transform: isScreenSharing ? "none" : "scaleX(-1)"
+                }}
                 className={cn("w-full h-full object-cover", isVideoOff && !isScreenSharing && "hidden")}
               />
               {isVideoOff && !isScreenSharing && (
@@ -1173,6 +1438,70 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
               >
                 <RotateCcw className="w-6 h-6" />
               </button>
+            )}
+
+            {activeCall.isVideo && (
+               <div className="relative">
+                 <button
+                   onClick={() => setShowAdvanced(!showAdvanced)}
+                   className={cn(
+                     "w-14 h-14 rounded-full flex items-center justify-center text-white transition-all shadow-lg backdrop-blur-md border border-slate-700",
+                     showAdvanced ? "bg-indigo-500" : "bg-slate-800 hover:bg-slate-700"
+                   )}
+                   title="Video Settings"
+                 >
+                   <Settings className="w-6 h-6" />
+                 </button>
+                 
+                 {showAdvanced && (
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 w-72 bg-slate-800/95 backdrop-blur-md border border-slate-700 rounded-2xl shadow-2xl p-4 flex flex-col gap-4 animate-in slide-in-from-bottom-2 fade-in">
+                        <div>
+                            <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">Video Quality</p>
+                            <div className="flex gap-1 bg-slate-900/50 p-1 rounded-lg">
+                                {["auto", "720p", "1080p", "2k"].map(q => (
+                                    <button 
+                                      key={q}
+                                      onClick={() => void switchCameraConfig(q as any)}
+                                      className={cn(
+                                          "flex-1 text-xs py-1.5 rounded-md font-medium transition-all capitalize",
+                                          videoQuality === q ? "bg-indigo-500 text-white shadow-sm" : "text-slate-400 hover:text-slate-200 hover:bg-slate-700/50"
+                                      )}
+                                    >
+                                        {q}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div>
+                            <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider flex items-center gap-1">
+                                <Sparkles className="w-3 h-3" /> Beauty Filter
+                            </p>
+                            <div className="flex gap-1 bg-slate-900/50 p-1 rounded-lg">
+                                {["off", "soft", "strong"].map(mode => (
+                                    <button 
+                                      key={mode}
+                                      onClick={() => void changeBeautyMode(mode as any)}
+                                      className={cn(
+                                          "flex-1 text-xs py-1.5 rounded-md font-medium transition-all capitalize",
+                                          beautyMode === mode ? "bg-pink-500 text-white shadow-sm" : "text-slate-400 hover:text-slate-200 hover:bg-slate-700/50"
+                                      )}
+                                    >
+                                        {mode}
+                                    </button>
+                                ))}
+                            </div>
+                            {isScreenSharing && beautyMode !== "off" && (
+                                <p className="text-[10px] text-amber-400 mt-2 text-center">Disabled while screen sharing</p>
+                            )}
+                        </div>
+                        {localResolution && (
+                             <div className="pt-2 border-t border-slate-700 text-center">
+                                 <p className="text-xs text-slate-500 font-mono">Current: <span className="text-slate-300">{localResolution}</span></p>
+                             </div>
+                        )}
+                    </div>
+                 )}
+               </div>
             )}
 
             <button
