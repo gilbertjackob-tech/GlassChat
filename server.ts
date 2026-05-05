@@ -4,455 +4,610 @@ import { Server as SocketIOServer } from "socket.io";
 import { createServer } from "http";
 import path from "path";
 import fs from "fs";
+import Database from "better-sqlite3";
+import multer from "multer";
+import cors from "cors";
 
-// Define Data Models
-interface UserRecord {
-  id: string;
-  name: string;
-  securityQuestion?: string;
-  securityAnswer?: string;
-  avatar?: string;
-  phone?: string;
-  lastActive?: number;
-  lastActivePrivacy?: "none" | "contacts" | "everyone";
+// Environment variables
+const HOST = process.env.HOST || "0.0.0.0";
+const PORT = Number(process.env.PORT || 3000);
+const DB_PATH =
+  process.env.DATABASE_PATH || path.join(process.cwd(), "data", "app.db");
+const UPLOAD_DIR =
+  process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads");
+
+// Ensure directories exist
+if (!fs.existsSync(path.dirname(DB_PATH))) {
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+}
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
-interface Chat {
-  id: string;
-  name: string;
-  avatar?: string;
-  lastMessage?: string;
-  lastMessageTime?: number;
-  unreadCount?: number;
-  isGroup?: boolean;
-  members?: string[];
-  deletedFor?: string[];
+// Database setup
+const db = new Database(DB_PATH);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    securityQuestion TEXT,
+    securityAnswer TEXT,
+    avatar TEXT,
+    phone TEXT,
+    lastActive INTEGER,
+    lastActivePrivacy TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS chats (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    avatar TEXT,
+    lastMessage TEXT,
+    lastMessageTime INTEGER,
+    unreadCount INTEGER,
+    isGroup INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS chat_members (
+    chatId TEXT,
+    userId TEXT,
+    PRIMARY KEY (chatId, userId)
+  );
+  
+  CREATE TABLE IF NOT EXISTS chat_deleted_for (
+    chatId TEXT,
+    userId TEXT,
+    PRIMARY KEY (chatId, userId)
+  );
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    chatId TEXT,
+    senderId TEXT,
+    senderName TEXT,
+    senderAvatar TEXT,
+    text TEXT,
+    timestamp INTEGER,
+    attachmentUrl TEXT,
+    attachmentType TEXT,
+    status TEXT,
+    pinnedUntil INTEGER,
+    isDeleted INTEGER,
+    location TEXT,
+    replyTo TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS reactions (
+    messageId TEXT,
+    emoji TEXT,
+    userId TEXT,
+    PRIMARY KEY (messageId, emoji, userId)
+  );
+
+  CREATE TABLE IF NOT EXISTS message_starred_by (
+    messageId TEXT,
+    userId TEXT,
+    PRIMARY KEY (messageId, userId)
+  );
+
+  CREATE TABLE IF NOT EXISTS message_deleted_for (
+    messageId TEXT,
+    userId TEXT,
+    PRIMARY KEY (messageId, userId)
+  );
+
+  CREATE TABLE IF NOT EXISTS file_attachments (
+    fileId TEXT PRIMARY KEY,
+    originalName TEXT,
+    storedName TEXT,
+    mimeType TEXT,
+    size INTEGER,
+    path TEXT,
+    uploaderId TEXT,
+    createdAt INTEGER
+  );
+`);
+
+// Helper to sanitize filenames
+function sanitizeFilename(name: string) {
+  return name.replace(/[^a-zA-Z0-9.-]/g, "_");
 }
 
-interface Reaction {
-  emoji: string;
-  userId: string;
-}
-
-interface LocationData {
-  lat: number;
-  lng: number;
-  isLive?: boolean;
-  expiresAt?: number;
-}
-
-interface Message {
-  id: string;
-  chatId: string;
-  senderId: string;
-  senderName: string;
-  senderAvatar?: string;
-  text: string;
-  timestamp: number;
-  reactions?: Reaction[];
-  attachmentUrl?: string;
-  attachmentType?: "image" | "file" | "audio";
-  status?: "sent" | "delivered" | "read";
-  starredBy?: string[];
-  pinnedUntil?: number;
-  isDeleted?: boolean;
-  deletedFor?: string[];
-  location?: LocationData;
-  replyTo?: { id: string; text: string; senderName: string; senderId?: string };
-}
-
-// In-memory Database
-let users: UserRecord[] = [];
-
-let chats: Chat[] = [
-  {
-    id: "1",
-    name: "General Chat",
-    lastMessage: "Welcome to WhatsClone",
-    lastMessageTime: Date.now(),
-    unreadCount: 0,
+// Multer setup
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, UPLOAD_DIR);
   },
-  {
-    id: "2",
-    name: "CLI Bot",
-    lastMessage: "Use the API to send messages here",
-    lastMessageTime: Date.now(),
-    unreadCount: 0,
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const safeName = sanitizeFilename(path.basename(file.originalname, ext));
+    cb(null, `${safeName}-${Date.now()}${ext}`);
   },
-];
+});
+const upload = multer({ storage });
 
-let messages: Message[] = [
-  {
-    id: "msg_1",
-    chatId: "1",
-    senderId: "system",
-    senderName: "System",
-    text: "Welcome to WhatsClone!",
-    timestamp: Date.now() - 10000,
-    status: "read",
-  },
-  {
-    id: "msg_2",
-    chatId: "2",
-    senderId: "cli-bot",
-    senderName: "CLI Bot",
-    text: "You can hit the API at POST /api/chats/2/messages",
-    timestamp: Date.now() - 5000,
-    status: "read",
-  },
-];
-
-const DATA_FILE = path.join(process.cwd(), "local_db.json");
-
-function loadData() {
-  if (fs.existsSync(DATA_FILE)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-      if (data.users) users = data.users;
-      if (data.chats) chats = data.chats;
-      if (data.messages) messages = data.messages;
-    } catch (e) {
-      console.error("Error reading local_db.json", e);
-    }
+function loadChats() {
+  const chats = db.prepare("SELECT * FROM chats").all() as any[];
+  for (const chat of chats) {
+    chat.isGroup = !!chat.isGroup;
+    chat.members = db
+      .prepare("SELECT userId FROM chat_members WHERE chatId = ?")
+      .all(chat.id)
+      .map((r: any) => r.userId);
+    chat.deletedFor = db
+      .prepare("SELECT userId FROM chat_deleted_for WHERE chatId = ?")
+      .all(chat.id)
+      .map((r: any) => r.userId);
   }
+  return chats;
 }
 
-function saveData() {
-  try {
-    fs.writeFileSync(
-      DATA_FILE,
-      JSON.stringify({ users, chats, messages }, null, 2),
-    );
-  } catch (e) {
-    console.error("Error saving local_db.json", e);
+function loadUsers() {
+  return db.prepare("SELECT * FROM users").all();
+}
+
+function loadMessages(chatId?: string) {
+  let msgs;
+  if (chatId) {
+    msgs = db
+      .prepare("SELECT * FROM messages WHERE chatId = ?")
+      .all(chatId) as any[];
+  } else {
+    msgs = db.prepare("SELECT * FROM messages").all() as any[];
   }
-}
 
-loadData();
+  for (const msg of msgs) {
+    msg.isDeleted = !!msg.isDeleted;
+    msg.location = msg.location ? JSON.parse(msg.location) : undefined;
+    msg.replyTo = msg.replyTo ? JSON.parse(msg.replyTo) : undefined;
+    msg.reactions = db
+      .prepare("SELECT emoji, userId FROM reactions WHERE messageId = ?")
+      .all(msg.id);
+    msg.starredBy = db
+      .prepare("SELECT userId FROM message_starred_by WHERE messageId = ?")
+      .all(msg.id)
+      .map((r: any) => r.userId);
+    msg.deletedFor = db
+      .prepare("SELECT userId FROM message_deleted_for WHERE messageId = ?")
+      .all(msg.id)
+      .map((r: any) => r.userId);
+  }
+  return msgs;
+}
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
 
-  // Use built-in JSON parser with larger limit for files
+  if (process.env.CORS_ORIGIN) {
+    app.use(cors({ origin: process.env.CORS_ORIGIN }));
+  } else {
+    app.use(cors());
+  }
+
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-
-  // Create uploads directory if not exists
-  const uploadsDir = path.join(process.cwd(), "uploads");
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir);
-  }
-  app.use("/uploads", express.static(uploadsDir));
+  app.use("/uploads", express.static(UPLOAD_DIR));
 
   const httpServer = createServer(app);
-
-  // Setup Socket.IO
   const io = new SocketIOServer(httpServer, {
-    cors: {
-      origin: "*",
-      methods: ["GET", "POST"],
-    },
+    cors: { origin: "*", methods: ["GET", "POST"] },
   });
 
   const connectedSockets = new Map<string, string>();
 
   io.on("connection", (socket) => {
-    console.log("A user connected:", socket.id);
-
-    // Identify user
     socket.on("identify", (userId: string) => {
       connectedSockets.set(socket.id, userId);
-      const user = users.find((u) => u.id === userId);
+      const user = db
+        .prepare("SELECT * FROM users WHERE id = ?")
+        .get(userId) as any;
       if (user) {
-        user.lastActive = Date.now();
-        // Since we don't know if they were already online from another tab, emit anyway
-        io.emit("presence_updated", { userId, online: true, lastActive: user.lastActive, privacy: user.lastActivePrivacy || "everyone" });
+        db.prepare("UPDATE users SET lastActive = ? WHERE id = ?").run(
+          Date.now(),
+          userId,
+        );
+        io.emit("presence_updated", {
+          userId,
+          online: true,
+          lastActive: Date.now(),
+          privacy: user.lastActivePrivacy || "everyone",
+        });
 
-        // Update any sent messages to delivered for chats this user is a member of
-        let requiresSave = false;
-        messages.forEach((m) => {
+        const messages = loadMessages();
+        const userChats = loadChats();
+        messages.forEach((m: any) => {
           if (m.status === "sent" && m.senderId !== userId) {
-            const chat = chats.find(c => c.id === m.chatId);
-            if (chat && (chat.members?.includes(userId) || chat.id === "global")) {
+            const chat = userChats.find((c) => c.id === m.chatId);
+            if (
+              chat &&
+              (chat.members?.includes(userId) || chat.id === "global")
+            ) {
+              db.prepare(
+                "UPDATE messages SET status = 'delivered' WHERE id = ?",
+              ).run(m.id);
               m.status = "delivered";
-              requiresSave = true;
               io.to(m.chatId).emit("message_updated", m);
             }
           }
         });
-        if (requiresSave) saveData();
       }
     });
 
-    // Client can join specific chat rooms to receive messages
-    socket.on("join_chat", (chatId: string) => {
-      socket.join(chatId);
-      console.log(`Socket ${socket.id} joined chat ${chatId}`);
-    });
+    socket.on("join_chat", (chatId: string) => socket.join(chatId));
+    socket.on("leave_chat", (chatId: string) => socket.leave(chatId));
 
-    socket.on("leave_chat", (chatId: string) => {
-      socket.leave(chatId);
-      console.log(`Socket ${socket.id} left chat ${chatId}`);
-    });
-
-    // Handle typing indicator
-    socket.on(
-      "typing",
-      (data: { chatId: string; senderName: string; isTyping?: boolean }) => {
-        socket.to(data.chatId).emit("user_typing", data);
-      },
+    socket.on("typing", (data) =>
+      socket.to(data.chatId).emit("user_typing", data),
     );
-
-    // WebRTC Signaling
-    socket.on("call_user", (data) => {
-      // broadcast the incoming call to the specific chat room
-      socket.to(data.chatId).emit("incoming_call", data);
-    });
-
-    socket.on("answer_call", (data) => {
-      socket.to(data.chatId).emit("call_answered", data);
-    });
-
-    socket.on("ice_candidate", (data) => {
-      socket.to(data.chatId).emit("ice_candidate", data);
-    });
-
-    socket.on("end_call", (data) => {
-      socket.to(data.chatId).emit("call_ended", data);
-    });
+    socket.on("call_user", (data) =>
+      socket.to(data.chatId).emit("incoming_call", data),
+    );
+    socket.on("answer_call", (data) =>
+      socket.to(data.chatId).emit("call_answered", data),
+    );
+    socket.on("ice_candidate", (data) =>
+      socket.to(data.chatId).emit("ice_candidate", data),
+    );
+    socket.on("end_call", (data) =>
+      socket.to(data.chatId).emit("call_ended", data),
+    );
 
     socket.on(
       "mark_messages_read",
       (data: { chatId: string; readerId: string }) => {
-        let requiresSave = false;
-        messages.forEach((m) => {
-          if (
-            m.chatId === data.chatId &&
-            m.senderId !== data.readerId &&
-            m.status !== "read"
-          ) {
+        const msgs = db
+          .prepare(
+            "SELECT * FROM messages WHERE chatId = ? AND senderId != ? AND status != 'read'",
+          )
+          .all(data.chatId, data.readerId) as any[];
+        const updateStmt = db.prepare(
+          "UPDATE messages SET status = 'read' WHERE id = ?",
+        );
+        db.transaction(() => {
+          msgs.forEach((m) => {
+            updateStmt.run(m.id);
             m.status = "read";
-            requiresSave = true;
+            m.location = m.location ? JSON.parse(m.location) : undefined;
+            m.replyTo = m.replyTo ? JSON.parse(m.replyTo) : undefined;
+            m.reactions = db
+              .prepare(
+                "SELECT emoji, userId FROM reactions WHERE messageId = ?",
+              )
+              .all(m.id);
+            m.starredBy = db
+              .prepare(
+                "SELECT userId FROM message_starred_by WHERE messageId = ?",
+              )
+              .all(m.id)
+              .map((r: any) => r.userId);
+            m.deletedFor = db
+              .prepare(
+                "SELECT userId FROM message_deleted_for WHERE messageId = ?",
+              )
+              .all(m.id)
+              .map((r: any) => r.userId);
             io.to(data.chatId).emit("message_updated", m);
-          }
-        });
-        if (requiresSave) saveData();
+          });
+        })();
       },
     );
 
     socket.on("disconnect", () => {
-      console.log("User disconnected:", socket.id);
       const userId = connectedSockets.get(socket.id);
       if (userId) {
         connectedSockets.delete(socket.id);
-        const isStillOnline = Array.from(connectedSockets.values()).includes(userId);
+        const isStillOnline = Array.from(connectedSockets.values()).includes(
+          userId,
+        );
         if (!isStillOnline) {
-          const user = users.find((u) => u.id === userId);
+          const user = db
+            .prepare("SELECT * FROM users WHERE id = ?")
+            .get(userId) as any;
           if (user) {
-            user.lastActive = Date.now();
-            saveData();
-            io.emit("presence_updated", { userId, online: false, lastActive: user.lastActive, privacy: user.lastActivePrivacy || "everyone" });
+            db.prepare("UPDATE users SET lastActive = ? WHERE id = ?").run(
+              Date.now(),
+              userId,
+            );
+            io.emit("presence_updated", {
+              userId,
+              online: false,
+              lastActive: Date.now(),
+              privacy: user.lastActivePrivacy || "everyone",
+            });
           }
         }
       }
     });
+
+    // Handle any message update emitted directly from clients using API or Socket context
+    socket.on(
+      "update_message_status",
+      (data: { chatId: string; messageId: string; status: string }) => {
+        // Some frontends might try to emit updates directly
+      },
+    );
   });
 
+  // Health check
+  app.get("/api/health", (req, res) => {
+    res.json({
+      ok: true,
+      host: HOST,
+      port: PORT,
+      database: "ok",
+      uploadDir: "ok",
+    });
+  });
+
+  // File Upload API
+  app.post("/api/files/upload", upload.single("file"), (req, res) => {
+    if (!req.file) {
+      res.status(400).json({ error: "No file uploaded" });
+      return;
+    }
+    const uploaderId = req.body.uploaderId || "unknown";
+    const fileId = "file_" + Math.random().toString(36).substr(2, 9);
+
+    db.prepare(
+      `
+      INSERT INTO file_attachments 
+      (fileId, originalName, storedName, mimeType, size, path, uploaderId, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    ).run(
+      fileId,
+      req.file.originalname,
+      req.file.filename,
+      req.file.mimetype,
+      req.file.size,
+      req.file.path,
+      uploaderId,
+      Date.now(),
+    );
+
+    // Always return relative path so frontend works seamlessly via relative endpoints
+    res.json({
+      fileId,
+      url: `/api/files/${fileId}`,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+    });
+  });
+
+  app.get("/api/files/:fileId", (req, res) => {
+    const file = db
+      .prepare("SELECT * FROM file_attachments WHERE fileId = ?")
+      .get(req.params.fileId) as any;
+    if (!file || !fs.existsSync(file.path)) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+    // Set proper header
+    res.setHeader("Content-Type", file.mimeType);
+    res.sendFile(path.resolve(file.path));
+  });
+
+  app.delete("/api/files/:fileId", (req, res) => {
+    const file = db
+      .prepare("SELECT * FROM file_attachments WHERE fileId = ?")
+      .get(req.params.fileId) as any;
+    if (!file) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+    if (fs.existsSync(file.path)) {
+      fs.unlinkSync(file.path);
+    }
+    db.prepare("DELETE FROM file_attachments WHERE fileId = ?").run(
+      file.fileId,
+    );
+    res.json({ success: true });
+  });
+
+  // General Routes
   app.get("/api/chats/messages/starred", (req, res) => {
     const { userId } = req.query;
     if (!userId) {
       res.status(400).json({ error: "userId query param is required" });
       return;
     }
-    const starredMessages = messages.filter(
-      (m) => m.starredBy && m.starredBy.includes(String(userId)),
+    const msgs = loadMessages();
+    const starredMessages = msgs.filter(
+      (m: any) => m.starredBy && m.starredBy.includes(String(userId)),
     );
     res.json(starredMessages);
   });
 
   app.get("/api/users/:userId", (req, res) => {
-    const userId = req.params.userId;
-    const user = users.find(u => u.id === userId);
+    const user = db
+      .prepare("SELECT * FROM users WHERE id = ?")
+      .get(req.params.userId) as any;
     if (!user) {
       res.status(404).json({ error: "User not found" });
       return;
     }
-    const isOnline = Array.from(connectedSockets.values()).includes(userId);
+    const isOnline = Array.from(connectedSockets.values()).includes(
+      req.params.userId,
+    );
     res.json({
-        id: user.id,
-        name: user.name,
-        avatar: user.avatar,
-        lastActive: user.lastActive,
-        online: isOnline,
-        privacy: user.lastActivePrivacy || "everyone"
+      id: user.id,
+      name: user.name,
+      avatar: user.avatar,
+      lastActive: user.lastActive,
+      online: isOnline,
+      privacy: user.lastActivePrivacy || "everyone",
     });
   });
 
   app.post("/api/users/:userId/privacy", (req, res) => {
-    const userId = req.params.userId;
     const { lastActivePrivacy } = req.body;
-    const user = users.find((u) => u.id === userId);
+    const userId = req.params.userId;
+    const user = db
+      .prepare("SELECT * FROM users WHERE id = ?")
+      .get(userId) as any;
     if (!user) {
       res.status(404).json({ error: "User not found" });
       return;
     }
     if (lastActivePrivacy) {
-      user.lastActivePrivacy = lastActivePrivacy;
-      saveData();
+      db.prepare("UPDATE users SET lastActivePrivacy = ? WHERE id = ?").run(
+        lastActivePrivacy,
+        userId,
+      );
       const isOnline = Array.from(connectedSockets.values()).includes(userId);
-      io.emit("presence_updated", { userId, online: isOnline, lastActive: user.lastActive, privacy: user.lastActivePrivacy });
+      user.lastActivePrivacy = lastActivePrivacy;
+      io.emit("presence_updated", {
+        userId,
+        online: isOnline,
+        lastActive: user.lastActive,
+        privacy: user.lastActivePrivacy,
+      });
       res.json(user);
     } else {
       res.status(400).json({ error: "Invalid payload" });
     }
   });
 
-  app.post("/api/users/:userId/contacts", (req, res) => {
-     // Optional endpoint to add/manage contacts if needed
-  });
-
   app.post("/api/export", (req, res) => {
     const { userId } = req.body;
-    if (!userId) {
-      res.status(400).json({ error: "userId is required" });
-      return;
-    }
+    if (!userId) return res.status(400).json({ error: "userId required" });
+    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
 
-    const user = users.find((u) => u.id === userId);
-    if (!user) {
-      res.status(404).json({ error: "User not found" });
-      return;
-    }
-
-    const userChats = chats.filter(
+    const chats = loadChats().filter(
       (c) => c.members?.includes(userId) || c.id === "global",
     );
-    const userChatIds = userChats.map((c) => c.id);
-    const userMessages = messages.filter((m) => userChatIds.includes(m.chatId));
-
-    res.json({
-      user,
-      chats: userChats,
-      messages: userMessages,
-    });
+    const chatIds = chats.map((c) => c.id);
+    const messages = loadMessages().filter((m) => chatIds.includes(m.chatId));
+    res.json({ user, chats, messages });
   });
 
   app.post("/api/import", (req, res) => {
     const { userId, data } = req.body;
-    if (!userId || !data || !data.user) {
-      res.status(400).json({ error: "Invalid import data format" });
-      return;
-    }
+    if (!userId || !data || !data.user)
+      return res.status(400).json({ error: "Invalid format" });
 
-    // Replace user details (including password)
-    const userIndex = users.findIndex((u) => u.id === userId);
-    if (userIndex !== -1) {
-      // Don't change ID, but update other fields
-      users[userIndex] = { ...users[userIndex], ...data.user, id: userId };
-    }
+    db.transaction(() => {
+      const existingUser = db
+        .prepare("SELECT id FROM users WHERE id = ?")
+        .get(userId);
+      if (existingUser) {
+        db.prepare(
+          "UPDATE users SET name = ?, securityQuestion = ?, securityAnswer = ?, avatar = ?, phone = ?, lastActivePrivacy = ? WHERE id = ?",
+        ).run(
+          data.user.name,
+          data.user.securityQuestion,
+          data.user.securityAnswer,
+          data.user.avatar,
+          data.user.phone,
+          data.user.lastActivePrivacy,
+          userId,
+        );
+      } else {
+        // If importing completely new user? The flow typically replaces existing.
+      }
 
-    // Merge chats
-    if (data.chats && Array.isArray(data.chats)) {
-      data.chats.forEach((inChat: any) => {
-        const existingIdx = chats.findIndex((c) => c.id === inChat.id);
-        if (existingIdx !== -1) {
-          chats[existingIdx] = { ...chats[existingIdx], ...inChat };
-        } else {
-          chats.push(inChat);
-        }
-      });
-    }
+      const insertChat = db.prepare(
+        "INSERT OR REPLACE INTO chats (id, name, avatar, lastMessage, lastMessageTime, unreadCount, isGroup) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      );
+      const insertMember = db.prepare(
+        "INSERT OR IGNORE INTO chat_members (chatId, userId) VALUES (?, ?)",
+      );
+      if (data.chats) {
+        data.chats.forEach((c: any) => {
+          insertChat.run(
+            c.id,
+            c.name,
+            c.avatar,
+            c.lastMessage,
+            c.lastMessageTime,
+            c.unreadCount,
+            c.isGroup ? 1 : 0,
+          );
+          if (c.members)
+            c.members.forEach((uid: string) => insertMember.run(c.id, uid));
+        });
+      }
 
-    // Merge messages
-    if (data.messages && Array.isArray(data.messages)) {
-      data.messages.forEach((inMsg: any) => {
-        const existingIdx = messages.findIndex((m) => m.id === inMsg.id);
-        if (existingIdx !== -1) {
-          messages[existingIdx] = { ...messages[existingIdx], ...inMsg };
-        } else {
-          messages.push(inMsg);
-        }
-      });
-    }
+      const insertMsg = db.prepare(
+        "INSERT OR REPLACE INTO messages (id, chatId, senderId, senderName, senderAvatar, text, timestamp, attachmentUrl, attachmentType, status, pinnedUntil, isDeleted, location, replyTo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      if (data.messages) {
+        data.messages.forEach((m: any) => {
+          insertMsg.run(
+            m.id,
+            m.chatId,
+            m.senderId,
+            m.senderName,
+            m.senderAvatar,
+            m.text,
+            m.timestamp,
+            m.attachmentUrl,
+            m.attachmentType,
+            m.status,
+            m.pinnedUntil,
+            m.isDeleted ? 1 : 0,
+            m.location ? JSON.stringify(m.location) : null,
+            m.replyTo ? JSON.stringify(m.replyTo) : null,
+          );
+        });
+      }
+    })();
 
-    saveData();
     res.json({ success: true });
   });
 
-  // Auth Routes
   app.post("/api/register", (req, res) => {
     const { name, securityQuestion, securityAnswer } = req.body;
-    if (!name || !securityQuestion || !securityAnswer) {
-      res.status(400).json({
-        error: "Username, security question, and answer are required",
-      });
-      return;
-    }
-    const existing = users.find(
-      (u) => u.name.toLowerCase() === name.toLowerCase(),
-    );
-    if (existing) {
-      res.status(400).json({ error: "Username already taken" });
-      return;
-    }
-    const newUser: UserRecord = {
-      id: "usr_" + Math.random().toString(36).substr(2, 9),
-      name,
-      securityQuestion,
-      securityAnswer,
-      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${name}`,
-    };
-    users.push(newUser);
-    saveData();
-    const { securityAnswer: _a, ...safeUser } = newUser;
-    res.status(201).json(safeUser);
+    if (!name || !securityQuestion || !securityAnswer)
+      return res.status(400).json({ error: "Missing fields" });
+    const existing = db
+      .prepare("SELECT id FROM users WHERE LOWER(name) = LOWER(?)")
+      .get(name);
+    if (existing) return res.status(400).json({ error: "Username taken" });
+
+    const id = "usr_" + Math.random().toString(36).substr(2, 9);
+    const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${name}`;
+    db.prepare(
+      "INSERT INTO users (id, name, securityQuestion, securityAnswer, avatar) VALUES (?, ?, ?, ?, ?)",
+    ).run(id, name, securityQuestion, securityAnswer, avatar);
+
+    res.status(201).json({ id, name, securityQuestion, avatar });
   });
 
   app.get("/api/user-question", (req, res) => {
     const { name } = req.query;
-    if (!name) {
-      res.status(400).json({ error: "Username is required" });
-      return;
-    }
-    const user = users.find(
-      (u) => u.name.toLowerCase() === (name as string).toLowerCase(),
-    );
-    if (!user) {
-      res.status(404).json({ error: "User not found" });
-      return;
-    }
+    if (!name) return res.status(400).json({ error: "Username required" });
+    const user = db
+      .prepare(
+        "SELECT securityQuestion FROM users WHERE LOWER(name) = LOWER(?)",
+      )
+      .get(name) as any;
+    if (!user) return res.status(404).json({ error: "User not found" });
     res.json({ securityQuestion: user.securityQuestion });
   });
 
   app.post("/api/login", (req, res) => {
     const { name, securityAnswer } = req.body;
-    const user = users.find(
-      (u) =>
-        u.name.toLowerCase() === name.toLowerCase() &&
-        u.securityAnswer?.toLowerCase() === securityAnswer.toLowerCase(),
-    );
-    if (!user) {
-      res.status(401).json({ error: "Incorrect answer" });
-      return;
-    }
-    const { securityAnswer: _a, ...safeUser } = user;
-    res.json(safeUser);
+    const user = db
+      .prepare(
+        "SELECT * FROM users WHERE LOWER(name) = LOWER(?) AND LOWER(securityAnswer) = LOWER(?)",
+      )
+      .get(name, securityAnswer) as any;
+    if (!user) return res.status(401).json({ error: "Incorrect answer" });
+    delete user.securityAnswer;
+    res.json(user);
   });
 
-  // 1. Get all chats
   app.get("/api/chats", (req, res) => {
-    res.json(chats);
+    res.json(loadChats());
   });
 
-  // 2. Get messages for a chat
   app.get("/api/chats/:chatId/messages", (req, res) => {
-    const chatId = req.params.chatId;
-    const chatMessages = messages.filter((m) => m.chatId === chatId);
-    res.json(chatMessages);
+    res.json(loadMessages(req.params.chatId));
   });
 
-  // 3. Send a message via API (This allows CLI and API integrations)
   app.post("/api/chats/:chatId/messages", (req, res) => {
     const chatId = req.params.chatId;
     let {
@@ -467,17 +622,13 @@ async function startServer() {
     } = req.body;
 
     if ((!text || text.trim() === "") && !attachmentUrl && !location) {
-      res
-        .status(400)
-        .json({ error: "Message text, attachment, or location is required" });
-      return;
+      return res.status(400).json({ error: "Content required" });
     }
 
-    const chat = chats.find((c) => c.id === chatId);
-    if (!chat) {
-      res.status(404).json({ error: "Chat not found" });
-      return;
-    }
+    const chat = db
+      .prepare("SELECT * FROM chats WHERE id = ?")
+      .get(chatId) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
 
     // Handle base64 attachment extraction to filesystem
     if (attachmentUrl && attachmentUrl.startsWith("data:")) {
@@ -490,150 +641,150 @@ async function startServer() {
           const base64Data = matches[2];
           const extension = mimeType.split("/")[1] || "bin";
           const filename = `file_${Date.now()}_${Math.random().toString(36).substring(2)}.${extension}`;
-          const filepath = path.join(process.cwd(), "uploads", filename);
+          const filepath = path.join(UPLOAD_DIR, filename);
           fs.writeFileSync(filepath, base64Data, "base64");
-          attachmentUrl = `/uploads/${filename}`;
+          // Store it as a proper file attachment entry to keep it consistent
+          const fileId = "file_" + Math.random().toString(36).substr(2, 9);
+          attachmentUrl = `/api/files/${fileId}`;
+          db.prepare(
+            `
+            INSERT INTO file_attachments 
+            (fileId, originalName, storedName, mimeType, size, path, uploaderId, createdAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          ).run(
+            fileId,
+            filename,
+            filename,
+            mimeType,
+            0,
+            filepath,
+            senderId || "system",
+            Date.now(),
+          );
         }
       } catch (e) {
         console.error("Failed to save base64 attachment", e);
       }
     }
 
-    const newMessage: Message = {
-      id: "msg_" + Math.random().toString(36).substr(2, 9),
+    const id = "msg_" + Math.random().toString(36).substr(2, 9);
+    const timestamp = Date.now();
+    const finalLocation = location ? JSON.stringify(location) : null;
+    const finalReplyTo = replyTo ? JSON.stringify(replyTo) : null;
+
+    db.prepare(
+      "INSERT INTO messages (id, chatId, senderId, senderName, senderAvatar, text, timestamp, attachmentUrl, attachmentType, status, location, replyTo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      id,
       chatId,
-      senderId: senderId || "api-user",
-      senderName: senderName || "API User",
+      senderId || "api-user",
+      senderName || "API User",
       senderAvatar,
-      text: text || (location ? "📍 Location shared" : ""),
-      timestamp: Date.now(),
-      reactions: [],
+      text || (location ? "📍 Location shared" : ""),
+      timestamp,
       attachmentUrl,
       attachmentType,
-      status: "sent",
-      location,
-      replyTo,
-    };
+      "sent",
+      finalLocation,
+      finalReplyTo,
+    );
 
-    // Save message
-    messages.push(newMessage);
+    db.prepare(
+      "UPDATE chats SET lastMessage = ?, lastMessageTime = ? WHERE id = ?",
+    ).run(text || (location ? "📍 Location" : ""), timestamp, chatId);
 
-    // Update chat metadata
-    chat.lastMessage = text || (location ? "📍 Location" : "");
-    chat.lastMessageTime = newMessage.timestamp;
+    const fullMsg = loadMessages(chatId).find((m: any) => m.id === id);
+    const updatedChat = loadChats().find((c) => c.id === chatId);
 
-    saveData();
+    io.to(chatId).emit("receive_message", fullMsg);
+    io.emit("chat_updated", updatedChat);
 
-    // Broadcast message via Socket.IO
-    // Emit to specific room for real-time update
-    io.to(chatId).emit("receive_message", newMessage);
-
-    // Emit globally for chat list updates
-    io.emit("chat_updated", chat);
-
-    // Check if any other chat member is online
-    const onlineOthers = chat.members?.filter(
-      (m) => m !== senderId && Array.from(connectedSockets.values()).includes(m)
-    ) || [];
-
-    if (onlineOthers.length > 0 || (chat.id === "global" && connectedSockets.size > 1)) {
-        const msg = messages.find((m) => m.id === newMessage.id);
-        if (msg && msg.status === "sent") {
-            msg.status = "delivered";
-            io.to(chatId).emit("message_updated", msg);
-        }
+    const members = updatedChat?.members || [];
+    const onlineOthers = members.filter(
+      (m: string) =>
+        m !== senderId && Array.from(connectedSockets.values()).includes(m),
+    );
+    if (
+      onlineOthers.length > 0 ||
+      (chatId === "global" && connectedSockets.size > 1)
+    ) {
+      db.prepare("UPDATE messages SET status = 'delivered' WHERE id = ?").run(
+        id,
+      );
+      fullMsg.status = "delivered";
+      io.to(chatId).emit("message_updated", fullMsg);
     }
 
-    res.status(201).json(newMessage);
+    res.status(201).json(fullMsg);
   });
 
   app.put("/api/chats/:chatId/messages/:messageId/location", (req, res) => {
     const { chatId, messageId } = req.params;
     const { lat, lng } = req.body;
 
-    const message = messages.find(
-      (m) => m.id === messageId && m.chatId === chatId,
-    );
-    if (!message) {
-      res.status(404).json({ error: "Message not found" });
-      return;
-    }
+    const message = loadMessages(chatId).find((m: any) => m.id === messageId);
+    if (!message) return res.status(404).json({ error: "Message not found" });
 
     if (message.location && message.location.isLive) {
       if (
         message.location.expiresAt &&
         message.location.expiresAt < Date.now()
       ) {
-        res.status(400).json({ error: "Live location has expired" });
-        return;
+        return res.status(400).json({ error: "Expired" });
       }
       message.location.lat = lat;
       message.location.lng = lng;
-      saveData();
+      db.prepare("UPDATE messages SET location = ? WHERE id = ?").run(
+        JSON.stringify(message.location),
+        messageId,
+      );
       io.to(chatId).emit("message_updated", message);
       res.json(message);
     } else {
-      res.status(400).json({ error: "Not a live location message" });
+      res.status(400).json({ error: "Not a live location" });
     }
   });
 
-  // 4. Create a new chat or group
   app.post("/api/chats", (req, res) => {
     const { name, isGroup, members } = req.body;
-    if (!name) {
-      res.status(400).json({ error: "Chat name is required" });
-      return;
-    }
+    if (!name) return res.status(400).json({ error: "Chat name required" });
 
-    const newChat: Chat = {
-      id: "chat_" + Math.random().toString(36).substr(2, 9),
-      name,
-      lastMessage: "",
-      lastMessageTime: Date.now(),
-      unreadCount: 0,
-      isGroup: isGroup || false,
-      members: members || [],
-    };
+    const id = "chat_" + Math.random().toString(36).substr(2, 9);
+    db.prepare(
+      "INSERT INTO chats (id, name, lastMessage, lastMessageTime, unreadCount, isGroup) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(id, name, "", Date.now(), 0, isGroup ? 1 : 0);
 
-    chats.push(newChat);
-    saveData();
+    const insertMember = db.prepare(
+      "INSERT INTO chat_members (chatId, userId) VALUES (?, ?)",
+    );
+    if (members) members.forEach((uid: string) => insertMember.run(id, uid));
+
+    const newChat = loadChats().find((c) => c.id === id);
     io.emit("new_chat", newChat);
-
     res.status(201).json(newChat);
   });
 
-  // 5. Add a reaction
   app.post("/api/chats/:chatId/messages/:messageId/react", (req, res) => {
     const { chatId, messageId } = req.params;
     const { emoji, userId } = req.body;
 
-    if (!emoji || !userId) {
-      res.status(400).json({ error: "Emoji and userId are required" });
-      return;
-    }
-
-    const message = messages.find(
-      (m) => m.id === messageId && m.chatId === chatId,
-    );
-    if (!message) {
-      res.status(404).json({ error: "Message not found" });
-      return;
-    }
-
-    if (!message.reactions) message.reactions = [];
-
-    // Toggle reaction logic
-    const existingIdx = message.reactions.findIndex(
-      (r) => r.userId === userId && r.emoji === emoji,
-    );
-    if (existingIdx !== -1) {
-      message.reactions.splice(existingIdx, 1);
+    const existing = db
+      .prepare(
+        "SELECT * FROM reactions WHERE messageId = ? AND emoji = ? AND userId = ?",
+      )
+      .get(messageId, emoji, userId);
+    if (existing) {
+      db.prepare(
+        "DELETE FROM reactions WHERE messageId = ? AND emoji = ? AND userId = ?",
+      ).run(messageId, emoji, userId);
     } else {
-      message.reactions.push({ emoji, userId });
+      db.prepare(
+        "INSERT INTO reactions (messageId, emoji, userId) VALUES (?, ?, ?)",
+      ).run(messageId, emoji, userId);
     }
 
-    saveData();
-
+    const message = loadMessages(chatId).find((m: any) => m.id === messageId);
     io.to(chatId).emit("message_updated", message);
     res.json(message);
   });
@@ -642,32 +793,22 @@ async function startServer() {
     const { chatId, messageId } = req.params;
     const { userId } = req.body;
 
-    if (!userId) {
-      res.status(400).json({ error: "userId is required" });
-      return;
-    }
-
-    const message = messages.find(
-      (m) => m.id === messageId && m.chatId === chatId,
-    );
-    if (!message) {
-      res.status(404).json({ error: "Message not found" });
-      return;
-    }
-
-    if (!message.starredBy) {
-      message.starredBy = [];
-    }
-
-    const index = message.starredBy.indexOf(userId);
-    if (index > -1) {
-      message.starredBy.splice(index, 1);
+    const existing = db
+      .prepare(
+        "SELECT * FROM message_starred_by WHERE messageId = ? AND userId = ?",
+      )
+      .get(messageId, userId);
+    if (existing) {
+      db.prepare(
+        "DELETE FROM message_starred_by WHERE messageId = ? AND userId = ?",
+      ).run(messageId, userId);
     } else {
-      message.starredBy.push(userId);
+      db.prepare(
+        "INSERT INTO message_starred_by (messageId, userId) VALUES (?, ?)",
+      ).run(messageId, userId);
     }
 
-    saveData();
-
+    const message = loadMessages(chatId).find((m: any) => m.id === messageId);
     io.to(chatId).emit("message_updated", message);
     res.json(message);
   });
@@ -676,27 +817,16 @@ async function startServer() {
     const { chatId, messageId } = req.params;
     const { durationDays } = req.body;
 
-    if (durationDays === undefined) {
-      res.status(400).json({ error: "durationDays is required" });
-      return;
-    }
-
-    const message = messages.find(
-      (m) => m.id === messageId && m.chatId === chatId,
+    const pinnedUntil =
+      durationDays === 0
+        ? null
+        : Date.now() + durationDays * 24 * 60 * 60 * 1000;
+    db.prepare("UPDATE messages SET pinnedUntil = ? WHERE id = ?").run(
+      pinnedUntil,
+      messageId,
     );
-    if (!message) {
-      res.status(404).json({ error: "Message not found" });
-      return;
-    }
 
-    if (durationDays === 0) {
-      message.pinnedUntil = undefined;
-    } else {
-      message.pinnedUntil = Date.now() + durationDays * 24 * 60 * 60 * 1000;
-    }
-
-    saveData();
-
+    const message = loadMessages(chatId).find((m: any) => m.id === messageId);
     io.to(chatId).emit("message_updated", message);
     res.json(message);
   });
@@ -705,88 +835,41 @@ async function startServer() {
     const { chatId, messageId } = req.params;
     const { userId, type } = req.body;
 
-    if (!userId || !type) {
-      res.status(400).json({ error: "userId and type are required" });
-      return;
-    }
-
-    const message = messages.find(
-      (m) => m.id === messageId && m.chatId === chatId,
-    );
-    if (!message) {
-      res.status(404).json({ error: "Message not found" });
-      return;
-    }
+    const message = loadMessages(chatId).find((m: any) => m.id === messageId);
+    if (!message) return res.status(404).json({ error: "Not found" });
 
     if (type === "for_everyone") {
-      if (message.senderId !== userId) {
-        res
-          .status(403)
-          .json({ error: "Can only delete own messages for everyone" });
-        return;
-      }
-
-      // Remove attachment file if it exists
-      if (
-        message.attachmentUrl &&
-        message.attachmentUrl.startsWith("/uploads/")
-      ) {
-        try {
-          const filepath = path.join(process.cwd(), message.attachmentUrl);
-          if (fs.existsSync(filepath)) {
-            fs.unlinkSync(filepath);
-          }
-        } catch (e) {
-          console.error("Failed to delete attachment: ", e);
-        }
-      }
-
-      message.isDeleted = true;
-      message.text = "This message was deleted";
-      message.attachmentUrl = undefined;
-      message.attachmentType = undefined;
-
-      saveData();
-      io.to(chatId).emit("message_updated", message);
-      res.json(message);
-    } else if (type === "for_me") {
-      if (!message.deletedFor) message.deletedFor = [];
-      if (!message.deletedFor.includes(userId)) {
-        message.deletedFor.push(userId);
-      }
-      saveData();
-      // Client handles state updates
-      res.json(message);
+      if (message.senderId !== userId)
+        return res.status(403).json({ error: "Forbidden" });
+      db.prepare(
+        "UPDATE messages SET isDeleted = 1, text = 'This message was deleted', attachmentUrl = NULL, attachmentType = NULL WHERE id = ?",
+      ).run(messageId);
+      const updated = loadMessages(chatId).find((m: any) => m.id === messageId);
+      io.to(chatId).emit("message_updated", updated);
+      res.json(updated);
     } else {
-      res.status(400).json({ error: "Invalid type" });
+      db.prepare(
+        "INSERT INTO message_deleted_for (messageId, userId) VALUES (?, ?) ON CONFLICT DO NOTHING",
+      ).run(messageId, userId);
+      message.deletedFor.push(userId);
+      res.json(message);
     }
   });
 
   app.delete("/api/chats/:chatId", (req, res) => {
     const { chatId } = req.params;
     const { userId } = req.body;
-
-    if (!userId) {
-      res.status(400).json({ error: "userId is required" });
-      return;
-    }
-
-    const chat = chats.find((c) => c.id === chatId);
-    if (!chat) {
-      res.status(404).json({ error: "Chat not found" });
-      return;
-    }
-
-    if (!chat.deletedFor) chat.deletedFor = [];
-    if (!chat.deletedFor.includes(userId)) {
-      chat.deletedFor.push(userId);
-    }
-
-    saveData();
-    res.json(chat);
+    db.prepare(
+      "INSERT INTO chat_deleted_for (chatId, userId) VALUES (?, ?) ON CONFLICT DO NOTHING",
+    ).run(chatId, userId);
+    res.json({ success: true, chatId });
   });
 
-  // Vite middleware for development
+  // Global socket error handler
+  io.engine.on("connection_error", (err) => {
+    console.log("Socket connection error:", err);
+  });
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -794,16 +877,20 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    // In production, serve the built files
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+    app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
-  httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  httpServer.listen(PORT, HOST, () => {
+    console.log(`\n=================================`);
+    console.log(`  GlassChat Local Server     `);
+    console.log(`=================================`);
+    console.log(`Local Access:      http://localhost:${PORT}`);
+    console.log(`Network/Tailscale: http://${HOST}:${PORT}`);
+    console.log(`Database Path:     ${DB_PATH}`);
+    console.log(`Uploads Directory: ${UPLOAD_DIR}`);
+    console.log(`=================================\n`);
   });
 }
 

@@ -3,7 +3,10 @@ import { Chat, Message } from "./types";
 // The API url is the same origin since we run Express on port 3000
 const API_BASE = "/api";
 
-export async function updateUserPrivacy(userId: string, lastActivePrivacy: "none" | "contacts" | "everyone"): Promise<void> {
+export async function updateUserPrivacy(
+  userId: string,
+  lastActivePrivacy: "none" | "contacts" | "everyone",
+): Promise<void> {
   const res = await fetch(`${API_BASE}/users/${userId}/privacy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -45,6 +48,22 @@ export async function fetchStarredMessages(userId: string): Promise<Message[]> {
   return res.json();
 }
 
+export async function uploadFile(
+  file: File,
+  uploaderId: string,
+): Promise<{ url: string; mimeType: string }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("uploaderId", uploaderId);
+
+  const res = await fetch(`${API_BASE}/files/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw new Error("Failed to upload file");
+  return res.json();
+}
+
 export async function sendMessage(
   chatId: string,
   text: string,
@@ -54,7 +73,7 @@ export async function sendMessage(
   senderName = "Me",
   senderAvatar?: string,
   location?: any,
-  replyTo?: { id: string; text: string; senderName: string; senderId?: string }
+  replyTo?: { id: string; text: string; senderName: string; senderId?: string },
 ): Promise<Message> {
   const res = await fetch(`${API_BASE}/chats/${chatId}/messages`, {
     method: "POST",

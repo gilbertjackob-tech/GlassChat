@@ -36,6 +36,7 @@ import {
   starMessage,
   pinMessage,
   deleteMessage,
+  uploadFile,
 } from "../api";
 import { cn } from "../lib/utils";
 import { useTheme } from "../ThemeContext";
@@ -59,6 +60,7 @@ export function ChatWindow({
     url: string;
     type: "image" | "file";
     name: string;
+    file?: File;
   } | null>(null);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [optionsMsgId, setOptionsMsgId] = useState<string | null>(null);
@@ -112,24 +114,29 @@ export function ChatWindow({
   const { enterIsSend, chatWallpaper } = useTheme();
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const [otherUserPresence, setOtherUserPresence] = useState<{ online: boolean, lastActive?: number, privacy: string } | null>(null);
+  const [otherUserPresence, setOtherUserPresence] = useState<{
+    online: boolean;
+    lastActive?: number;
+    privacy: string;
+  } | null>(null);
 
   useEffect(() => {
     // If 1-on-1 chat, find the other user's presence
     if (!chat.isGroup && chat.members) {
-      const otherId = chat.members.find(m => m !== currentUser.id);
+      const otherId = chat.members.find((m) => m !== currentUser.id);
       if (otherId) {
         import("../api").then((api) => {
-          api.fetchUserPresence(otherId)
-            .then(data => {
-               setOtherUserPresence({
-                 online: data.online,
-                 lastActive: data.lastActive,
-                 privacy: data.privacy
-               });
+          api
+            .fetchUserPresence(otherId)
+            .then((data) => {
+              setOtherUserPresence({
+                online: data.online,
+                lastActive: data.lastActive,
+                privacy: data.privacy,
+              });
             })
-            .catch(err => {
-               console.error("Could not fetch presence", err);
+            .catch((err) => {
+              console.error("Could not fetch presence", err);
             });
         });
       } else {
@@ -292,13 +299,23 @@ export function ChatWindow({
       }
     };
 
-    const handlePresenceUpdated = (data: { userId: string, online: boolean, lastActive: number, privacy: string }) => {
+    const handlePresenceUpdated = (data: {
+      userId: string;
+      online: boolean;
+      lastActive: number;
+      privacy: string;
+    }) => {
       // If we are looking at 1-1 chat
-      if (!chat.isGroup && chat.members && chat.members.includes(data.userId) && data.userId !== currentUser.id) {
+      if (
+        !chat.isGroup &&
+        chat.members &&
+        chat.members.includes(data.userId) &&
+        data.userId !== currentUser.id
+      ) {
         setOtherUserPresence({
           online: data.online,
           lastActive: data.lastActive,
-          privacy: data.privacy
+          privacy: data.privacy,
         });
       }
     };
@@ -373,11 +390,26 @@ export function ChatWindow({
     setReplyingToMessage(null);
 
     try {
+      let attachmentUrl = currentAttachment?.url;
+      let attachmentType = currentAttachment?.type;
+
+      if (currentAttachment?.file) {
+        // Upload the file
+        const uploaded = await uploadFile(
+          currentAttachment.file,
+          currentUser.id,
+        );
+        attachmentUrl = uploaded.url;
+        attachmentType = uploaded.mimeType.startsWith("image/")
+          ? "image"
+          : "file";
+      }
+
       await sendMessage(
         chat.id,
         currentText || " ",
-        currentAttachment?.url,
-        currentAttachment?.type,
+        attachmentUrl,
+        attachmentType,
         currentUser.id,
         currentUser.name,
         currentUser.avatar,
@@ -402,6 +434,7 @@ export function ChatWindow({
         url: base64Url,
         type: isImage ? "image" : "file",
         name: file.name,
+        file: file,
       });
     };
     reader.readAsDataURL(file);
@@ -523,24 +556,35 @@ export function ChatWindow({
         }
       };
 
-      mediaRecorder.onstop = () => {
+      mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, {
           type: "audio/webm",
         });
-        const audioUrl = URL.createObjectURL(audioBlob);
 
         streamRef.current?.getTracks().forEach((track) => track.stop());
 
         if (audioChunksRef.current.length > 0) {
-          sendMessage(
-            chat.id,
-            " ",
-            audioUrl,
-            "audio",
-            currentUser.id,
-            currentUser.name,
-            currentUser.avatar,
-          ).catch(console.error);
+          try {
+            const audioFile = new File(
+              [audioBlob],
+              `audio_${Date.now()}.webm`,
+              { type: "audio/webm" },
+            );
+            const uploaded = await uploadFile(audioFile, currentUser.id);
+
+            await sendMessage(
+              chat.id,
+              " ",
+              uploaded.url,
+              "audio",
+              currentUser.id,
+              currentUser.name,
+              currentUser.avatar,
+            );
+          } catch (e) {
+            console.error(e);
+            alert("Failed to send audio message");
+          }
         }
         setIsRecording(false);
         if (timerRef.current) clearInterval(timerRef.current);
@@ -580,9 +624,13 @@ export function ChatWindow({
 
     if (otherUserPresence.privacy === "contacts") {
       const savedContacts = localStorage.getItem("whatsclone_contacts");
-      const localContacts = savedContacts ? JSON.parse(savedContacts) as Contact[] : [];
+      const localContacts = savedContacts
+        ? (JSON.parse(savedContacts) as Contact[])
+        : [];
       // The other user's name or we check if they are in contacts
-      const isContact = localContacts.some((c: Contact) => c.name === chat.name);
+      const isContact = localContacts.some(
+        (c: Contact) => c.name === chat.name,
+      );
       if (!isContact) return null;
     }
 
@@ -605,9 +653,9 @@ export function ChatWindow({
     const d = new Date(timestamp);
     const now = new Date();
     if (d.toDateString() === now.toDateString()) {
-      return `last seen today at ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      return `last seen today at ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     }
-    return `last seen ${d.toLocaleDateString()} at ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    return `last seen ${d.toLocaleDateString()} at ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
   };
 
   const getWallpaperClass = () => {
@@ -822,7 +870,12 @@ export function ChatWindow({
 
         {messages
           .filter((m) => !m.deletedFor?.includes(currentUser.id))
-          .filter((m) => !searchQuery || (m.text && m.text.toLowerCase().includes(searchQuery.toLowerCase())))
+          .filter(
+            (m) =>
+              !searchQuery ||
+              (m.text &&
+                m.text.toLowerCase().includes(searchQuery.toLowerCase())),
+          )
           .map((msg, idx, arr) => {
             const isMe =
               msg.senderId === currentUser.id || msg.senderId === "local-user";
@@ -1010,12 +1063,17 @@ export function ChatWindow({
                             className="max-w-[220px] h-10 outline-none"
                           />
                         ) : (
-                          <div className="flex items-center space-x-2 bg-black/10 dark:bg-white/10 p-2 rounded-md overflow-hidden">
+                          <a
+                            href={msg.attachmentUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center space-x-2 bg-black/10 dark:bg-white/10 p-2 rounded-md overflow-hidden hover:bg-black/20 dark:hover:bg-white/20 transition-colors"
+                          >
                             <Paperclip className="w-5 h-5 shrink-0 text-slate-500 dark:text-[#8696a0]" />
                             <span className="text-sm truncate font-medium dark:text-[#e9edef]">
                               {msg.text || "File"}
                             </span>
-                          </div>
+                          </a>
                         )}
                       </div>
                     )}

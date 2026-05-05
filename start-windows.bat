@@ -1,0 +1,3 @@
+@echo off
+echo Starting GlassChat server...
+npm start
