@@ -260,6 +260,7 @@ export default function App() {
 
             {activeChat ? (
               <ChatWindow
+                key={activeChat.id}
                 chat={activeChat}
                 currentUser={currentUser}
                 onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
