@@ -47,6 +47,8 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [hasError, setHasError] = useState("");
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -90,6 +92,8 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       localStreamRef.current = null;
     }
     remoteStreamRef.current = null;
+    setLocalStream(null);
+    setRemoteStream(null);
     peerUserIdRef.current = null;
     connectedAtRef.current = null;
     setIncomingCall(null);
@@ -147,8 +151,10 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
 
   const attachPeerHandlers = (pc: RTCPeerConnection, call: CallData) => {
     pc.ontrack = (event) => {
-      remoteStreamRef.current = event.streams[0];
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0];
+      const stream = event.streams[0];
+      remoteStreamRef.current = stream;
+      setRemoteStream(stream);
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
     };
 
     pc.onicecandidate = (event) => {
@@ -181,7 +187,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         activeCallRef.current?.callId === call.callId &&
         callStatusRef.current === "outgoing_calling"
       ) {
-        setCallStatus("outgoing_ringing");
+        setCallStatus("trying_to_reach");
       }
     }, 10000);
 
@@ -190,7 +196,9 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       const status = callStatusRef.current;
       if (
         currentCall?.callId === call.callId &&
-        (status === "outgoing_calling" || status === "outgoing_ringing")
+        (status === "outgoing_calling" ||
+          status === "trying_to_reach" ||
+          status === "outgoing_ringing")
       ) {
         emitSignal("call:missed", {
           callId: call.callId,
@@ -315,7 +323,11 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
 
     const endFromRemote = (status: CallStatus, message?: string, data?: SignalPayload) => {
       if (!isCurrentCallEvent(data)) return;
-      finishAfterStatus(status, message);
+      const finalStatus =
+        data?.reason === "ended_by_caller" || data?.reason === "cancelled"
+          ? "cancelled"
+          : status;
+      finishAfterStatus(finalStatus, message);
     };
 
     const startOutgoingCall = async (e: Event) => {
@@ -360,6 +372,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
           video: isVideo,
         });
         localStreamRef.current = stream;
+        setLocalStream(stream);
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
         const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -407,9 +420,6 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     socket.on("call:ended", (data) => endFromRemote("ended", undefined, data));
     socket.on("call:failed", (data) => endFromRemote("failed", "Call failed", data));
 
-    socket.on("call_user", handleIncomingCall);
-    socket.on("call_ended", () => endFromRemote("ended"));
-
     return () => {
       window.removeEventListener("START_CALL", startOutgoingCall);
       socket.off("call:start", handleIncomingCall);
@@ -425,8 +435,6 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       socket.off("call:declined");
       socket.off("call:ended");
       socket.off("call:failed");
-      socket.off("call_user", handleIncomingCall);
-      socket.off("call_ended");
     };
   }, [socket, currentUser]);
 
@@ -441,13 +449,13 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   }, [activeCall, callStatus]);
 
   useEffect(() => {
-    if (localVideoRef.current && localStreamRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
     }
-    if (remoteVideoRef.current && remoteStreamRef.current) {
-      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    if (remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
     }
-  }, [activeCall, isVideoOff]);
+  }, [activeCall, isVideoOff, localStream, remoteStream]);
 
   const acceptCall = async () => {
     if (!socket || !incomingCall) return;
@@ -490,6 +498,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         video: incomingCall.isVideo,
       });
       localStreamRef.current = stream;
+      setLocalStream(stream);
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -534,7 +543,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     if (signal) {
       emitSignal("call:end", {
         ...signal,
-        reason: connectedAtRef.current ? "ended" : "no_answer",
+        reason: connectedAtRef.current ? "ended" : "ended_by_caller",
       });
     }
     resetState();
@@ -574,6 +583,8 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   const statusLabel =
     callStatus === "outgoing_calling"
       ? "Calling..."
+      : callStatus === "trying_to_reach"
+        ? "Trying to reach user..."
       : callStatus === "outgoing_ringing" || callStatus === "incoming_ringing"
         ? "Ringing..."
         : callStatus === "connecting"
@@ -590,6 +601,8 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                     ? "User unavailable"
                     : callStatus === "failed"
                       ? "Call failed"
+                      : callStatus === "cancelled"
+                        ? "Call cancelled"
                       : "";
 
   if (!incomingCall && !activeCall && !hasError) return null;
@@ -639,10 +652,10 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
               playsInline
               className={cn(
                 "w-full h-full object-cover",
-                (!activeCall.isVideo || !remoteStreamRef.current?.getVideoTracks()[0]?.enabled) && "hidden",
+                (!activeCall.isVideo || !remoteStream?.getVideoTracks()[0]?.enabled) && "hidden",
               )}
             />
-            {(!activeCall.isVideo || !remoteStreamRef.current?.getVideoTracks()[0]?.enabled) && (
+            {(!activeCall.isVideo || !remoteStream?.getVideoTracks()[0]?.enabled) && (
               <div className="flex flex-col items-center">
                 <div className="w-32 h-32 rounded-full bg-slate-800 border-4 border-slate-700 flex items-center justify-center text-5xl mb-6 text-white shadow-2xl relative overflow-hidden">
                   <div className="absolute inset-0 rounded-full bg-indigo-500/20 blur-xl animate-pulse" />

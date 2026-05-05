@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { User } from './types';
 
 interface SocketContextType {
   socket: Socket | null;
@@ -10,7 +11,7 @@ const SocketContext = createContext<SocketContextType>({ socket: null, isConnect
 
 export const useSocket = () => useContext(SocketContext);
 
-export const SocketProvider = ({ children }: { children: ReactNode }) => {
+export const SocketProvider = ({ children, currentUser }: { children: ReactNode; currentUser: User | null }) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
 
@@ -23,9 +24,18 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         reconnectionDelay: 1000,
     });
 
+    const identify = () => {
+      if (currentUser?.id) {
+        socketInstance.emit("identify", currentUser.id);
+      }
+    };
+
     socketInstance.on('connect', () => {
       setIsConnected(true);
+      identify();
     });
+
+    socketInstance.io.on("reconnect", identify);
 
     socketInstance.on('disconnect', () => {
       setIsConnected(false);
@@ -34,9 +44,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     setSocket(socketInstance);
 
     return () => {
+      socketInstance.io.off("reconnect", identify);
       socketInstance.disconnect();
     };
-  }, []);
+  }, [currentUser?.id]);
 
   return (
     <SocketContext.Provider value={{ socket, isConnected }}>

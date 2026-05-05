@@ -323,6 +323,7 @@ function validateCallSignal(data: any): { ok: true; call: any } | { ok: false; r
 
 function finalStatusFromReason(reason: string, wasConnected: boolean) {
   if (wasConnected) return "ended";
+  if (reason === "cancelled" || reason === "ended_by_caller") return "cancelled";
   if (reason === "busy") return "busy";
   if (reason === "missed" || reason === "no_answer") return "missed";
   if (reason === "declined") return "declined";
@@ -398,19 +399,6 @@ async function startServer() {
     socket.on("typing", (data) =>
       socket.to(data.chatId).emit("user_typing", data),
     );
-    socket.on("call_user", (data) =>
-      socket.to(data.chatId).emit("incoming_call", data),
-    );
-    socket.on("answer_call", (data) =>
-      socket.to(data.chatId).emit("call_answered", data),
-    );
-    socket.on("ice_candidate", (data) =>
-      socket.to(data.chatId).emit("ice_candidate", data),
-    );
-    socket.on("end_call", (data) =>
-      socket.to(data.chatId).emit("call_ended", data),
-    );
-
     const failCallSignal = (data: any, reason = "invalid_signal") => {
       socket.emit("call:failed", {
         callId: data?.callId,

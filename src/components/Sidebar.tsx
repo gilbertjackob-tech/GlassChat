@@ -160,9 +160,6 @@ export function Sidebar({
   useEffect(() => {
     if (!socket) return;
 
-    // Identify our socket connection with our user ID
-    socket.emit("identify", currentUser.id);
-
     socket.on("chat_updated", (updatedChat: Chat) => {
       setChats((prev) => {
         const idx = prev.findIndex((c) => c.id === updatedChat.id);
@@ -410,10 +407,20 @@ export function Sidebar({
   useEffect(() => {
     if (showCalls) {
       if (typeof window !== "undefined") {
-        fetch(`${API_BASE}/calls?userId=${currentUser.id}`)
-          .then(res => res.json())
-          .then(setCallLogs)
-          .catch(console.error);
+        fetch(`${API_BASE}/calls?userId=${encodeURIComponent(currentUser.id)}`)
+          .then((res) => {
+            if (!res.ok) {
+              throw new Error(`Failed to fetch calls: ${res.status}`);
+            }
+            return res.json();
+          })
+          .then((data) => {
+            setCallLogs(Array.isArray(data) ? data : []);
+          })
+          .catch((err) => {
+            console.error(err);
+            setCallLogs([]);
+          });
       }
     }
   }, [showCalls, currentUser.id]);

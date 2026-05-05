@@ -83,7 +83,7 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      <SocketProvider>
+      <SocketProvider currentUser={currentUser}>
         {currentUser && !hasRequestedPermissions && (
           <PermissionsModal
             onDone={() => {
