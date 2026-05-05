@@ -46,7 +46,7 @@ type SignalPayload = {
   videoOff?: boolean;
   screenSharing?: boolean;
   quality?: "auto" | "720p" | "1080p" | "2k";
-  beautyMode?: "off" | "soft" | "strong";
+  beautyMode?: "off" | "soft" | "strong" | "vintage" | "bw" | "vibrant" | "popart" | "cyberpunk" | "dreamy" | "alien";
 };
 
 interface CallOverlayProps {
@@ -72,11 +72,17 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>("");
   const [videoQuality, setVideoQuality] = useState<"auto" | "720p" | "1080p" | "2k">("auto");
-  const [beautyMode, setBeautyMode] = useState<"off" | "soft" | "strong">("off");
+  const [beautyMode, setBeautyMode] = useState<"off" | "soft" | "strong" | "vintage" | "bw" | "vibrant" | "popart" | "cyberpunk" | "dreamy" | "alien">("off");
   const [remoteQuality, setRemoteQuality] = useState<"auto" | "720p" | "1080p" | "2k" | undefined>();
-  const [remoteBeautyMode, setRemoteBeautyMode] = useState<"off" | "soft" | "strong" | undefined>();
+  const [remoteBeautyMode, setRemoteBeautyMode] = useState<"off" | "soft" | "strong" | "vintage" | "bw" | "vibrant" | "popart" | "cyberpunk" | "dreamy" | "alien" | undefined>();
   const [localResolution, setLocalResolution] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [isSwapped, setIsSwapped] = useState(false);
+
+  const toggleSwap = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setIsSwapped((prev) => !prev);
+  };
 
   // Audio Context for ringtones
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -411,7 +417,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     sender.setParameters(params).catch(console.error);
   };
 
-  const applyBeautyMode = (mode: "off" | "soft" | "strong", srcTrack: MediaStreamTrack | null = cameraVideoTrackRef.current) => {
+  const applyBeautyMode = (mode: "off" | "soft" | "strong" | "vintage" | "bw" | "vibrant" | "popart" | "cyberpunk" | "dreamy" | "alien", srcTrack: MediaStreamTrack | null = cameraVideoTrackRef.current) => {
     if (beautyAnimationRef.current) {
       cancelAnimationFrame(beautyAnimationRef.current);
       beautyAnimationRef.current = null;
@@ -446,7 +452,23 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         
         ctx!.filter = mode === "soft"
           ? "brightness(1.06) contrast(1.03) saturate(1.08) blur(0.25px)"
-          : "brightness(1.10) contrast(1.05) saturate(1.12) blur(0.45px)";
+          : mode === "strong"
+          ? "brightness(1.10) contrast(1.05) saturate(1.12) blur(0.45px)"
+          : mode === "vintage"
+          ? "brightness(1.1) contrast(1.05) saturate(1.3) sepia(0.5)"
+          : mode === "bw"
+          ? "grayscale(1) contrast(1.2)"
+          : mode === "vibrant"
+          ? "saturate(1.8) contrast(1.1) brightness(1.05)"
+          : mode === "popart"
+          ? "contrast(1.5) saturate(2) hue-rotate(45deg)"
+          : mode === "cyberpunk"
+          ? "saturate(2) hue-rotate(90deg) contrast(1.2)"
+          : mode === "dreamy"
+          ? "brightness(1.15) saturate(0.8) blur(1px) contrast(0.9)"
+          : mode === "alien"
+          ? "hue-rotate(180deg) saturate(1.5) contrast(1.1)"
+          : "none";
         
         const drawLoop = () => {
             if (isPlaying && hiddenVideo.videoWidth > 0 && hiddenVideo.videoHeight > 0) {
@@ -974,8 +996,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       toUserId: incomingCall.callerId,
       reason: "declined",
     });
-    setIncomingCall(null);
-    setCallStatus("idle");
+    finishAfterStatus("idle", "Call declined");
   };
 
   const endActiveCall = () => {
@@ -987,7 +1008,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         reason: connectedAtRef.current ? "ended" : "ended_by_caller",
       });
     }
-    resetState();
+    finishAfterStatus("ended", "Call ended");
   };
 
   const formatDuration = (seconds: number) => {
@@ -1187,7 +1208,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       }
   };
 
-  const changeBeautyMode = async (newMode: "off" | "soft" | "strong") => {
+  const changeBeautyMode = async (newMode: "off" | "soft" | "strong" | "vintage" | "bw" | "vibrant" | "popart" | "cyberpunk" | "dreamy" | "alien") => {
       setBeautyMode(newMode);
       if (!cameraVideoTrackRef.current) return;
       
@@ -1262,7 +1283,9 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                         ? "Call failed"
                         : callStatus === "cancelled"
                           ? "Call cancelled"
-                        : "";
+                          : callStatus === "ended"
+                            ? "Call ended"
+                            : "";
 
   const renderAvatar = (sizeClass: string) => (
     <div className={cn("rounded-full bg-slate-800 flex items-center justify-center overflow-hidden border border-slate-700 shadow-xl", sizeClass)}>
@@ -1432,7 +1455,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
           ref={containerRef}
           className="w-full h-full md:w-[85%] md:h-[90%] md:max-w-6xl md:rounded-2xl bg-black flex flex-col items-center shadow-[0_0_60px_rgba(0,0,0,0.6)] border border-slate-700 relative overflow-hidden"
         >
-          <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
+          <div className="absolute top-4 left-4 z-40 flex items-center gap-2">
             <button
               onClick={() => setIsMinimized(true)}
               className="w-11 h-11 rounded-full bg-slate-900/80 border border-slate-700 text-white flex items-center justify-center hover:bg-slate-800 transition-colors backdrop-blur-md"
@@ -1458,7 +1481,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
             )}
           </div>
           
-          <div className="absolute top-4 right-4 z-20 flex flex-col items-end gap-2 text-xs font-mono">
+          <div className="absolute top-4 right-4 z-40 flex flex-col items-end gap-2 text-xs font-mono">
             {remoteQuality && remoteQuality !== "auto" && activeCall.isVideo && (
                  <span className="px-2 py-1 bg-black/60 text-white rounded uppercase tracking-widest backdrop-blur-md border border-slate-700/50">{remoteQuality}</span>
             )}
@@ -1477,7 +1500,13 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
             )}
           </div>
 
-          <div className="flex-1 w-full flex items-center justify-center bg-slate-900/50 relative">
+          <div 
+            className={cn(
+               "absolute transition-all duration-300",
+               isSwapped ? "z-30 w-32 h-48 sm:w-48 sm:h-64 bg-slate-800 rounded-xl overflow-hidden shadow-2xl border border-slate-700 cursor-pointer bottom-[100px] right-[20px]" : "inset-0 flex items-center justify-center bg-slate-900/50 w-full h-full z-10"
+            )}
+            onClick={isSwapped ? toggleSwap : undefined}
+          >
             <div 
                className="absolute inset-0 opacity-30 z-0 bg-cover bg-center" 
                style={{ 
@@ -1496,8 +1525,8 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
               )}
             />
             {(!activeCall.isVideo || !remoteStream?.getVideoTracks()[0]?.enabled) && (
-              <div className="flex flex-col items-center px-6 text-center">
-                <div className="w-32 h-32 rounded-full bg-slate-800 border-4 border-slate-700 flex items-center justify-center text-5xl mb-6 text-white shadow-2xl relative overflow-hidden">
+              <div className="flex flex-col items-center px-4 sm:px-6 text-center z-10 p-2 relative h-full justify-center">
+                <div className={cn("rounded-full bg-slate-800 border-4 border-slate-700 flex items-center justify-center text-white shadow-2xl relative overflow-hidden", isSwapped ? "w-16 h-16 text-2xl mb-2" : "w-32 h-32 text-5xl mb-6")}>
                   <div className="absolute inset-0 rounded-full bg-indigo-500/20 blur-xl animate-pulse" />
                   {otherAvatar ? (
                     <img src={otherAvatar} alt={otherName} className="w-full h-full object-cover relative z-10" />
@@ -1505,11 +1534,15 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                     <span className="relative z-10">{otherName.charAt(0).toUpperCase()}</span>
                   )}
                 </div>
-                <h2 className="text-white text-3xl font-bold mb-2">{otherName}</h2>
-                <p className="text-emerald-400 font-mono tracking-widest flex items-center justify-center gap-2">
-                  {statusLabel}
-                </p>
-                {activeCall.isVideo && !remoteStream?.getVideoTracks()[0]?.enabled && callStatus === "connected" && (
+                {!isSwapped && (
+                  <>
+                    <h2 className="text-white text-3xl font-bold mb-2">{otherName}</h2>
+                    <p className="text-emerald-400 font-mono tracking-widest flex items-center justify-center gap-2">
+                      {statusLabel}
+                    </p>
+                  </>
+                )}
+                {activeCall.isVideo && !remoteStream?.getVideoTracks()[0]?.enabled && callStatus === "connected" && !isSwapped && (
                     <p className="mt-4 text-slate-400 text-sm flex items-center justify-center gap-2 relative z-20 bg-black/40 px-3 py-1.5 rounded-full border border-slate-700/50">
                         <VideoOff className="w-4 h-4 text-amber-400" /> {otherName} turned off their camera
                     </p>
@@ -1520,12 +1553,17 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
 
           {activeCall.isVideo && (
             <motion.div 
-               drag
+               drag={!isSwapped}
                dragConstraints={containerRef}
                dragElastic={0}
                dragMomentum={false}
-               className="absolute z-20 w-32 h-48 sm:w-48 sm:h-64 bg-slate-800 rounded-xl overflow-hidden shadow-2xl border border-slate-700 cursor-move"
-               style={{ bottom: "100px", right: "20px" }}
+               animate={isSwapped ? { x: 0, y: 0 } : undefined}
+               className={cn(
+                 "absolute transition-all duration-300 overflow-hidden shadow-2xl border border-slate-700 bg-slate-800",
+                 !isSwapped ? "z-30 w-32 h-48 sm:w-48 sm:h-64 rounded-xl cursor-move bottom-[100px] right-[20px]" : "inset-0 flex items-center justify-center w-full h-full z-10 rounded-none border-0"
+               )}
+               style={!isSwapped ? { bottom: "100px", right: "20px" } : { bottom: 0, right: 0 }}
+               onClick={!isSwapped ? toggleSwap : undefined}
             >
               <video
                 ref={localVideoRef}
@@ -1533,24 +1571,20 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                 playsInline
                 muted
                 style={{
-                  filter: 
-                    beautyMode === "soft" ? "brightness(1.06) contrast(1.03) saturate(1.08) blur(0.25px)" :
-                    beautyMode === "strong" ? "brightness(1.10) contrast(1.05) saturate(1.12) blur(0.45px)" :
-                    "none",
-                  transform: isScreenSharing ? "none" : "scaleX(-1)"
+                  transform: isScreenSharing ? "none" : "scaleX(-1)",
                 }}
-                className={cn("w-full h-full object-cover pointer-events-none", isVideoOff && !isScreenSharing && "hidden")}
+                className={cn("w-full h-full pointer-events-none", isSwapped ? "object-contain" : "object-cover", isVideoOff && !isScreenSharing && "hidden")}
               />
               {isVideoOff && !isScreenSharing && (
                 <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 bg-slate-900 pointer-events-none">
-                  <VideoOff className="w-8 h-8 opacity-50 mb-2" />
-                  <span className="text-[10px] font-mono uppercase">Camera Off</span>
+                  <VideoOff className={cn("opacity-50", isSwapped ? "w-16 h-16 mb-4" : "w-8 h-8 mb-2")} />
+                  <span className={cn("font-mono uppercase", isSwapped ? "text-lg" : "text-[10px]")}>Camera Off</span>
                 </div>
               )}
             </motion.div>
           )}
 
-          <div className="absolute bottom-0 inset-x-0 p-4 sm:p-6 flex flex-wrap justify-center gap-3 sm:gap-5 bg-gradient-to-t from-slate-900 via-slate-900/80 to-transparent">
+          <div className="absolute bottom-0 inset-x-0 p-4 sm:p-6 flex flex-wrap justify-center gap-3 sm:gap-5 bg-gradient-to-t from-slate-900 via-slate-900/80 to-transparent z-40">
             <button
               onClick={toggleMute}
               className={cn(
@@ -1643,13 +1677,13 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                             <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider flex items-center gap-1">
                                 <Sparkles className="w-3 h-3" /> Beauty Filter
                             </p>
-                            <div className="flex gap-1 bg-slate-900/50 p-1 rounded-lg">
-                                {["off", "soft", "strong"].map(mode => (
+                            <div className="flex flex-wrap gap-1 bg-slate-900/50 p-1 rounded-lg">
+                                {["off", "soft", "strong", "vintage", "bw", "vibrant", "popart", "cyberpunk", "dreamy", "alien"].map(mode => (
                                     <button 
                                       key={mode}
                                       onClick={() => void changeBeautyMode(mode as any)}
                                       className={cn(
-                                          "flex-1 text-xs py-1.5 rounded-md font-medium transition-all capitalize",
+                                          "px-3 flex-1 min-w-[70px] text-xs py-1.5 rounded-md font-medium transition-all capitalize",
                                           beautyMode === mode ? "bg-pink-500 text-white shadow-sm" : "text-slate-400 hover:text-slate-200 hover:bg-slate-700/50"
                                       )}
                                     >

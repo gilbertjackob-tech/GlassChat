@@ -43,6 +43,8 @@ interface SidebarProps {
   setActiveRailTab: (tab: string) => void;
 }
 
+import { StatusPane } from "./StatusPane";
+
 export function Sidebar({
   activeChatId,
   onSelectChat,
@@ -1512,15 +1514,12 @@ export function Sidebar({
           showStatus ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <div className="h-16 flex-none bg-slate-50 dark:bg-[#111b21] flex flex-row items-center px-4 transition-colors duration-300">
+        <div className="h-16 flex-none bg-slate-50 dark:bg-[#111b21] flex flex-row items-center px-4 transition-colors duration-300 border-b border-slate-200 dark:border-slate-800">
           <h1 className="text-[22px] font-bold text-slate-800 dark:text-[#e9edef]">
             Status
           </h1>
         </div>
-        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500 dark:text-[#8696a0]">
-          <CircleDashed className="w-16 h-16 mb-4 text-slate-300 dark:text-slate-600" />
-          <p>No recent status updates</p>
-        </div>
+        <StatusPane currentUser={currentUser} />
       </div>
 
       {/* Communities Pane */}

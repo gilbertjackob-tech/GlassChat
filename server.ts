@@ -127,6 +127,24 @@ db.exec(`
     durationSeconds INTEGER,
     endReason TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS statuses (
+    id TEXT PRIMARY KEY,
+    userId TEXT,
+    text TEXT,
+    attachmentUrl TEXT,
+    attachmentType TEXT,
+    backgroundColor TEXT,
+    duration INTEGER,
+    timestamp INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS status_views (
+    statusId TEXT,
+    userId TEXT,
+    timestamp INTEGER,
+    PRIMARY KEY (statusId, userId)
+  );
 `);
 
 try { db.prepare("ALTER TABLE users ADD COLUMN email TEXT").run(); } catch(e){}
@@ -1616,6 +1634,56 @@ async function startServer() {
       params.push(id);
       db.prepare(`UPDATE call_logs SET ${updateFields.join(", ")} WHERE id = ?`).run(...params);
     }
+    res.json({ success: true });
+  });
+
+  app.get("/api/statuses", (req, res) => {
+    const userId = String(req.query.userId || "");
+    if (!userId) return res.status(400).json({ error: "userId is required" });
+    
+    // For simplicity, let's get all statuses within last 24 hours.
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const statuses = db.prepare(`
+      SELECT s.*, u.name as userName, u.avatar as userAvatar 
+      FROM statuses s
+      LEFT JOIN users u ON s.userId = u.id
+      WHERE s.timestamp >= ?
+      ORDER BY s.timestamp ASC
+    `).all(cutoff);
+
+    const views = db.prepare(`SELECT * FROM status_views`).all();
+    
+    const mapped = statuses.map((s: any) => {
+      s.views = views.filter((v: any) => v.statusId === s.id).map((v: any) => ({ userId: v.userId, timestamp: v.timestamp }));
+      return s;
+    });
+
+    res.json(mapped);
+  });
+
+  app.post("/api/statuses", (req, res) => {
+    const { userId, text, attachmentUrl, attachmentType, backgroundColor, duration } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId is required" });
+    
+    const id = "status_" + Math.random().toString(36).substr(2, 9);
+    const timestamp = Date.now();
+    
+    db.prepare(
+      "INSERT INTO statuses (id, userId, text, attachmentUrl, attachmentType, backgroundColor, duration, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(id, userId, text || "", attachmentUrl || "", attachmentType || "", backgroundColor || "#000000", duration || 5000, timestamp);
+    
+    res.status(201).json({ id, timestamp });
+  });
+
+  app.post("/api/statuses/:id/view", (req, res) => {
+    const { id } = req.params;
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId is required" });
+    
+    db.prepare(
+      "INSERT INTO status_views (statusId, userId, timestamp) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
+    ).run(id, userId, Date.now());
+    
     res.json({ success: true });
   });
 
