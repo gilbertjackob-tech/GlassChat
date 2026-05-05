@@ -50,6 +50,8 @@ export interface Message {
   reactions?: Reaction[];
   attachmentUrl?: string;
   attachmentType?: "image" | "file" | "audio";
+  attachmentName?: string;
+  attachmentSize?: number;
   status?: "sent" | "delivered" | "read";
   starredBy?: string[];
   pinnedUntil?: number;

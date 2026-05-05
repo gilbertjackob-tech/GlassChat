@@ -71,6 +71,8 @@ db.exec(`
     timestamp INTEGER,
     attachmentUrl TEXT,
     attachmentType TEXT,
+    attachmentName TEXT,
+    attachmentSize INTEGER,
     status TEXT,
     pinnedUntil INTEGER,
     isDeleted INTEGER,
@@ -106,6 +108,19 @@ db.exec(`
     path TEXT,
     uploaderId TEXT,
     createdAt INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS call_logs (
+    id TEXT PRIMARY KEY,
+    callerId TEXT,
+    calleeId TEXT,
+    chatId TEXT,
+    type TEXT,
+    status TEXT,
+    startedAt INTEGER,
+    answeredAt INTEGER,
+    endedAt INTEGER,
+    durationSeconds INTEGER
   );
 `);
 
@@ -253,6 +268,16 @@ async function startServer() {
       socket.to(data.chatId).emit("call_ended", data),
     );
 
+    // Modern WebRTC signaling
+    socket.on("call:start", (data) => socket.to(data.chatId).emit("call:start", data));
+    socket.on("call:offer", (data) => socket.to(data.chatId).emit("call:offer", data));
+    socket.on("call:answer", (data) => socket.to(data.chatId).emit("call:answer", data));
+    socket.on("call:ice-candidate", (data) => socket.to(data.chatId).emit("call:ice-candidate", data));
+    socket.on("call:ringing", (data) => socket.to(data.chatId).emit("call:ringing", data));
+    socket.on("call:reject", (data) => socket.to(data.chatId).emit("call:reject", data));
+    socket.on("call:end", (data) => socket.to(data.chatId).emit("call:end", data));
+    socket.on("call:failed", (data) => socket.to(data.chatId).emit("call:failed", data));
+
     socket.on(
       "mark_messages_read",
       (data: { chatId: string; readerId: string }) => {
@@ -372,6 +397,7 @@ async function startServer() {
       url: `/api/files/${fileId}`,
       originalName: req.file.originalname,
       mimeType: req.file.mimetype,
+      size: req.file.size,
     });
   });
 
@@ -642,6 +668,8 @@ async function startServer() {
       text,
       attachmentUrl,
       attachmentType,
+      attachmentName,
+      attachmentSize,
       location,
       replyTo,
     } = req.body;
@@ -671,6 +699,8 @@ async function startServer() {
           // Store it as a proper file attachment entry to keep it consistent
           const fileId = "file_" + Math.random().toString(36).substr(2, 9);
           attachmentUrl = `/api/files/${fileId}`;
+          attachmentName = filename;
+          attachmentSize = Buffer.byteLength(base64Data, 'base64');
           db.prepare(
             `
             INSERT INTO file_attachments 
@@ -699,7 +729,7 @@ async function startServer() {
     const finalReplyTo = replyTo ? JSON.stringify(replyTo) : null;
 
     db.prepare(
-      "INSERT INTO messages (id, chatId, senderId, senderName, senderAvatar, text, timestamp, attachmentUrl, attachmentType, status, location, replyTo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO messages (id, chatId, senderId, senderName, senderAvatar, text, timestamp, attachmentUrl, attachmentType, attachmentName, attachmentSize, status, location, replyTo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       id,
       chatId,
@@ -710,6 +740,8 @@ async function startServer() {
       timestamp,
       attachmentUrl,
       attachmentType,
+      attachmentName || null,
+      attachmentSize || null,
       "sent",
       finalLocation,
       finalReplyTo,
@@ -935,6 +967,42 @@ async function startServer() {
       "INSERT INTO chat_deleted_for (chatId, userId) VALUES (?, ?) ON CONFLICT DO NOTHING",
     ).run(chatId, userId);
     res.json({ success: true, chatId });
+  });
+
+  app.get("/api/calls", (req, res) => {
+    const userId = req.query.userId;
+    if (!userId) return res.status(400).json({ error: "userId required" });
+    const calls = db
+      .prepare("SELECT * FROM call_logs WHERE callerId = ? OR calleeId = ? ORDER BY startedAt DESC LIMIT 50")
+      .all(userId, userId);
+    res.json(calls);
+  });
+
+  app.post("/api/calls", (req, res) => {
+    const { callerId, calleeId, chatId, type, status, startedAt } = req.body;
+    const id = "call_" + Math.random().toString(36).substr(2, 9);
+    db.prepare(
+      "INSERT INTO call_logs (id, callerId, calleeId, chatId, type, status, startedAt) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run(id, callerId, calleeId, chatId, type, status, startedAt || Date.now());
+    res.status(201).json({ id });
+  });
+
+  app.patch("/api/calls/:id", (req, res) => {
+    const { id } = req.params;
+    const { status, answeredAt, endedAt, durationSeconds } = req.body;
+    let updateFields: string[] = [];
+    let params: any[] = [];
+
+    if (status) { updateFields.push("status = ?"); params.push(status); }
+    if (answeredAt) { updateFields.push("answeredAt = ?"); params.push(answeredAt); }
+    if (endedAt) { updateFields.push("endedAt = ?"); params.push(endedAt); }
+    if (durationSeconds !== undefined) { updateFields.push("durationSeconds = ?"); params.push(durationSeconds); }
+
+    if (updateFields.length > 0) {
+      params.push(id);
+      db.prepare(`UPDATE call_logs SET ${updateFields.join(", ")} WHERE id = ?`).run(...params);
+    }
+    res.json({ success: true });
   });
 
   // Global socket error handler

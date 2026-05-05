@@ -73,7 +73,7 @@ export async function fetchStarredMessages(userId: string): Promise<Message[]> {
 export async function uploadFile(
   file: File,
   uploaderId: string,
-): Promise<{ url: string; mimeType: string }> {
+): Promise<{ url: string; mimeType: string; originalName: string; size: number }> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("uploaderId", uploaderId);
@@ -91,6 +91,8 @@ export async function sendMessage(
   text: string,
   attachmentUrl?: string,
   attachmentType?: "image" | "file" | "audio",
+  attachmentName?: string,
+  attachmentSize?: number,
   senderId = "local-user",
   senderName = "Me",
   senderAvatar?: string,
@@ -104,6 +106,8 @@ export async function sendMessage(
       text,
       attachmentUrl,
       attachmentType,
+      attachmentName,
+      attachmentSize,
       senderId,
       senderName,
       senderAvatar,

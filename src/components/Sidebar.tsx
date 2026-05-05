@@ -368,6 +368,19 @@ export function Sidebar({
   const isContactsTab = activeRailTab === "contacts";
   const contactsVisible = showContacts || isContactsTab;
 
+  // Calls pane state
+  const [callLogs, setCallLogs] = useState<any[]>([]);
+  useEffect(() => {
+    if (showCalls) {
+      if (typeof window !== "undefined") {
+        fetch(`${window.location.origin}/api/calls?userId=${currentUser.id}`)
+          .then(res => res.json())
+          .then(setCallLogs)
+          .catch(console.error);
+      }
+    }
+  }, [showCalls, currentUser.id]);
+
   return (
     <div className="flex flex-col h-full bg-white dark:bg-slate-800 z-10 w-full relative overflow-hidden shadow-sm transition-colors duration-300">
       {/* Header */}
@@ -1116,7 +1129,7 @@ export function Sidebar({
       {/* Calls Pane */}
       <div
         className={cn(
-          "absolute inset-0 bg-white dark:bg-[#111b21] z-20 flex flex-col transition-transform duration-300 transform",
+          "absolute inset-0 bg-slate-50 dark:bg-[#111b21] z-20 flex flex-col transition-transform duration-300 transform",
           showCalls ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -1125,9 +1138,84 @@ export function Sidebar({
             Calls
           </h1>
         </div>
-        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500 dark:text-[#8696a0]">
-          <Phone className="w-16 h-16 mb-4 text-slate-300 dark:text-slate-600" />
-          <p>No recent calls</p>
+        <div className="flex-1 overflow-y-auto">
+          {callLogs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center p-8 text-center text-slate-500 dark:text-[#8696a0] h-full">
+              <Phone className="w-16 h-16 mb-4 text-slate-300 dark:text-slate-600" />
+              <p>No recent calls</p>
+            </div>
+          ) : (
+            <div className="flex flex-col">
+               {callLogs.map((log: any) => {
+                 const isIncoming = log.calleeId === currentUser.id;
+                 const otherUserId = isIncoming ? log.callerId : log.calleeId;
+                 const typeLabel = log.type === "video" ? "Video" : "Audio";
+                 
+                 // Get display text for status/duration
+                 let statusText = log.status;
+                 if (log.status === "ended" && log.durationSeconds !== null) {
+                    const mins = Math.floor(log.durationSeconds / 60);
+                    const secs = log.durationSeconds % 60;
+                    statusText = `Duration: ${mins}:${secs.toString().padStart(2, "0")}`;
+                 } else if (log.status === "rejected") {
+                    statusText = "Missed / Rejected";
+                 }
+
+                 return (
+                   <div key={log.id} className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                     <div className="w-12 h-12 rounded-full bg-slate-300 dark:bg-slate-700 flex items-center justify-center text-slate-500 shrink-0">
+                       <UserIcon className="w-6 h-6" />
+                     </div>
+                     <div className="flex-1 ml-4 line-clamp-1">
+                       <div className="flex items-center justify-between">
+                         <h3 className={cn("font-bold text-[15px] dark:text-slate-200 text-slate-800", log.status === "rejected" ? "text-red-500" : "")}>
+                           {otherUserId}
+                         </h3>
+                         <span className="text-xs text-slate-400">
+                           {format(new Date(log.startedAt), "MMM d, HH:mm")}
+                         </span>
+                       </div>
+                       <div className="flex items-center justify-between mt-1">
+                         <div className="flex items-center space-x-2 text-sm text-slate-500">
+                            {isIncoming ? (
+                               <ArrowLeft className={cn("w-4 h-4", log.status === "rejected" ? "text-red-500" : "text-emerald-500")} />
+                            ) : (
+                               <ArrowLeft className={cn("w-4 h-4 rotate-180", log.status === "rejected" ? "text-red-500" : "text-emerald-500")} />
+                            )}
+                            <span className="capitalize">{statusText}</span>
+                         </div>
+                         <div className="flex items-center space-x-2">
+                           <button onClick={async () => {
+                             // Find the matching chat
+                             const { fetchChats } = await import("../api");
+                             const allChats = await fetchChats();
+                             const matchingChat = allChats.find(c => c.id === log.chatId);
+                             if (matchingChat) {
+                               onSelectChat(matchingChat);
+                               setTimeout(() => {
+                                 window.dispatchEvent(
+                                  new CustomEvent("START_CALL", {
+                                    detail: {
+                                      chatId: matchingChat.id,
+                                      callerId: currentUser.id,
+                                      callerName: currentUser.name,
+                                      isVideo: log.type === "video",
+                                    },
+                                  }),
+                                );
+                               }, 300);
+                             }
+                           }} className="text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 p-2 rounded-full transition">
+                              <Phone className="w-5 h-5 fill-current" />
+                           </button>
+                         </div>
+                       </div>
+                     </div>
+                   </div>
+                 );
+               })}
+            </div>
+          )}
         </div>
       </div>
 

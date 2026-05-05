@@ -41,6 +41,15 @@ import {
 import { cn } from "../lib/utils";
 import { useTheme } from "../ThemeContext";
 
+function formatBytes(bytes?: number, decimals = 2) {
+  if (!bytes) return "0 Bytes";
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+}
+
 interface ChatWindowProps {
   chat: Chat;
   currentUser: User;
@@ -185,7 +194,32 @@ export function ChatWindow({
     return () => navigator.geolocation.clearWatch(watchId);
   }, [messages, currentUser.id, chat.id]);
 
-  const handleShareLocation = (isLive: boolean, durationMinutes?: number) => {
+  const handleShareLocation = (isLive: boolean, durationMinutes?: number, manualLocation?: string) => {
+    if (manualLocation) {
+        const locationData = {
+          lat: 0,
+          lng: 0,
+          manualText: manualLocation,
+          isLive: false,
+        };
+
+        setShowLocationModal(false);
+        sendMessage(
+          chat.id,
+          "",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          currentUser.id,
+          currentUser.name,
+          currentUser.avatar,
+          locationData,
+        ).then(msg => setMessages((prev) => [...prev, msg]))
+         .catch(e => console.error("Failed to share location", e));
+        return;
+    }
+
     if (!("geolocation" in navigator)) {
       alert("Geolocation is not supported by your browser");
       return;
@@ -209,6 +243,8 @@ export function ChatWindow({
           const msg = await sendMessage(
             chat.id,
             "",
+            undefined,
+            undefined,
             undefined,
             undefined,
             currentUser.id,
@@ -392,6 +428,8 @@ export function ChatWindow({
     try {
       let attachmentUrl = currentAttachment?.url;
       let attachmentType = currentAttachment?.type;
+      let attachmentName = currentAttachment?.name;
+      let attachmentSize;
 
       if (currentAttachment?.file) {
         // Upload the file
@@ -403,6 +441,8 @@ export function ChatWindow({
         attachmentType = uploaded.mimeType.startsWith("image/")
           ? "image"
           : "file";
+        attachmentName = uploaded.originalName || currentAttachment.name;
+        attachmentSize = uploaded.size;
       }
 
       await sendMessage(
@@ -410,6 +450,8 @@ export function ChatWindow({
         currentText || " ",
         attachmentUrl,
         attachmentType,
+        attachmentName,
+        attachmentSize,
         currentUser.id,
         currentUser.name,
         currentUser.avatar,
@@ -577,6 +619,8 @@ export function ChatWindow({
               " ",
               uploaded.url,
               "audio",
+              uploaded.originalName,
+              uploaded.size,
               currentUser.id,
               currentUser.name,
               currentUser.avatar,
@@ -1021,22 +1065,26 @@ export function ChatWindow({
                     {msg.location && (
                       <div
                         className="mb-2 mt-1 bg-slate-200 dark:bg-slate-700 w-full sm:w-[260px] h-32 rounded-md flex flex-col items-center justify-center text-slate-500 cursor-pointer overflow-hidden relative shadow-sm border border-slate-300 dark:border-slate-600"
-                        onClick={() =>
-                          window.open(
-                            `https://maps.google.com/?q=${msg.location!.lat},${msg.location!.lng}`,
-                          )
-                        }
+                        onClick={() => {
+                          if (msg.location!.manualText && msg.location!.manualText.startsWith("http")) {
+                            window.open(msg.location!.manualText);
+                          } else if (msg.location!.manualText) {
+                            window.open(`https://maps.google.com/?q=${encodeURIComponent(msg.location!.manualText)}`);
+                          } else {
+                            window.open(`https://maps.google.com/?q=${msg.location!.lat},${msg.location!.lng}`);
+                          }
+                        }}
                       >
                         <MapPin className="w-8 h-8 text-red-500 mb-2 drop-shadow" />
-                        <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                        <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 flex-none max-w-[90%] truncate px-2">
                           {msg.location.isLive
                             ? "Live Location"
-                            : "Location Shared"}
+                            : msg.location.manualText ? msg.location.manualText : "Location Shared"}
                         </span>
                         {msg.location.isLive &&
                         msg.location.expiresAt &&
                         msg.location.expiresAt > Date.now() ? (
-                          <div className="flex items-center space-x-1 mt-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-100 dark:bg-emerald-900/30 px-2 py-0.5 rounded-full">
+                          <div className="flex items-center space-x-1 mt-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-100 dark:bg-emerald-900/30 px-2 py-0.5 rounded-full flex-none">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                             <span>Live updating...</span>
                           </div>
@@ -1051,29 +1099,70 @@ export function ChatWindow({
                     {msg.attachmentUrl && (
                       <div className="mb-2 mt-1">
                         {msg.attachmentType === "image" ? (
-                          <img
-                            src={msg.attachmentUrl}
-                            alt="attachment"
-                            className="rounded-md max-h-64 object-contain"
-                          />
+                          <div className="relative group rounded-md overflow-hidden bg-black/5 dark:bg-white/5">
+                            <img
+                              src={msg.attachmentUrl}
+                              alt={msg.attachmentName || "attachment"}
+                              className="rounded-md max-h-64 sm:max-h-80 object-contain w-auto hover:opacity-90 transition-opacity"
+                            />
+                            <a
+                              href={msg.attachmentUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="absolute top-2 right-2 bg-black/50 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                              title="Download/Open"
+                            >
+                              <Download className="w-4 h-4" />
+                            </a>
+                          </div>
                         ) : msg.attachmentType === "audio" ? (
-                          <audio
-                            controls
-                            src={msg.attachmentUrl}
-                            className="max-w-[220px] h-10 outline-none"
-                          />
+                          <div className="bg-black/5 dark:bg-white/5 p-2 rounded-lg">
+                            <audio
+                              controls
+                              src={msg.attachmentUrl}
+                              className="max-w-[200px] h-10 outline-none"
+                            />
+                            {msg.attachmentSize && (
+                              <p className="text-[10px] text-slate-500 mt-1 pl-1">{formatBytes(msg.attachmentSize)}</p>
+                            )}
+                          </div>
                         ) : (
-                          <a
-                            href={msg.attachmentUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center space-x-2 bg-black/10 dark:bg-white/10 p-2 rounded-md overflow-hidden hover:bg-black/20 dark:hover:bg-white/20 transition-colors"
-                          >
-                            <Paperclip className="w-5 h-5 shrink-0 text-slate-500 dark:text-[#8696a0]" />
-                            <span className="text-sm truncate font-medium dark:text-[#e9edef]">
-                              {msg.text || "File"}
-                            </span>
-                          </a>
+                          <div className="flex flex-col space-y-2 bg-black/5 dark:bg-white/5 p-3 rounded-xl max-w-full sm:max-w-sm">
+                            <div className="flex items-center space-x-3">
+                              <div className="bg-white dark:bg-slate-800 p-2 rounded-lg shrink-0 text-indigo-500 dark:text-indigo-400">
+                                {msg.attachmentName?.toLowerCase().endsWith(".pdf") ? (
+                                  <span className="font-bold text-xs uppercase tracking-wider text-red-500">PDF</span>
+                                ) : msg.attachmentName?.toLowerCase().endsWith(".mp4") || msg.attachmentName?.toLowerCase().endsWith(".mov") ? (
+                                  <span className="font-bold text-xs uppercase tracking-wider text-blue-500">Video</span>
+                                ) : (
+                                  <Paperclip className="w-6 h-6" />
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-semibold truncate dark:text-[#e9edef] text-slate-800 mb-0.5">
+                                  {msg.attachmentName || "Document"}
+                                </p>
+                                <p className="text-[11px] font-medium text-slate-500 dark:text-[#8696a0] uppercase flex items-center space-x-1 border border-slate-300 dark:border-slate-700 w-fit px-1.5 rounded bg-black/5 dark:bg-white/5">
+                                  <span>{msg.attachmentName?.split('.').pop() || "FILE"}</span>
+                                  {msg.attachmentSize ? (
+                                    <>
+                                      <span className="mx-1">•</span>
+                                      <span>{formatBytes(msg.attachmentSize)}</span>
+                                    </>
+                                  ) : null}
+                                </p>
+                              </div>
+                            </div>
+                            <a
+                              href={msg.attachmentUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center justify-center space-x-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 p-2 rounded-lg font-bold text-xs hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors"
+                            >
+                              <Download className="w-4 h-4" />
+                              <span>Download / Open</span>
+                            </a>
+                          </div>
                         )}
                       </div>
                     )}
