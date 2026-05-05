@@ -427,6 +427,12 @@ async function startServer() {
 
     // Modern WebRTC signaling
     socket.on("call:start", (data) => {
+      console.log("[CALL_START]", {
+        callId: data?.callId,
+        chatId: data?.chatId,
+        fromUserId: data?.fromUserId,
+        toUserId: data?.toUserId,
+      });
       const validation = validateCallSignal(data);
       if (!validation.ok) {
         failCallSignal(data);
@@ -458,6 +464,12 @@ async function startServer() {
     );
 
     socket.on("call:ringing", (data) => {
+      console.log("[CALL_RINGING]", {
+        callId: data?.callId,
+        chatId: data?.chatId,
+        fromUserId: data?.fromUserId,
+        toUserId: data?.toUserId,
+      });
       const call = routeValidatedSignal("call:ringing", data);
       if (!call) return;
       db.prepare(
@@ -466,6 +478,12 @@ async function startServer() {
     });
 
     socket.on("call:accepted", (data) => {
+      console.log("[CALL_ACCEPTED]", {
+        callId: data?.callId,
+        chatId: data?.chatId,
+        fromUserId: data?.fromUserId,
+        toUserId: data?.toUserId,
+      });
       const call = routeValidatedSignal("call:accepted", data);
       if (!call) return;
       db.prepare(
@@ -474,6 +492,12 @@ async function startServer() {
     });
 
     socket.on("call:connected", (data) => {
+      console.log("[CALL_CONNECTED]", {
+        callId: data?.callId,
+        chatId: data?.chatId,
+        fromUserId: data?.fromUserId,
+        toUserId: data?.toUserId,
+      });
       const call = routeValidatedSignal("call:connected", data);
       if (!call) return;
       const now = Date.now();
@@ -483,6 +507,14 @@ async function startServer() {
     });
 
     socket.on("call:busy", (data) => {
+      console.log("[CALL_BUSY]", {
+        callId: data?.callId,
+        chatId: data?.chatId,
+        callerId: data?.callerId,
+        calleeId: data?.calleeId,
+        fromUserId: data?.fromUserId,
+        toUserId: data?.toUserId,
+      });
       const validation = validateCallSignal({
         ...data,
         fromUserId: data.fromUserId || data.calleeId,
@@ -504,6 +536,14 @@ async function startServer() {
     });
 
     socket.on("call:missed", (data) => {
+      console.log("[CALL_MISSED]", {
+        callId: data?.callId,
+        chatId: data?.chatId,
+        callerId: data?.callerId,
+        calleeId: data?.calleeId,
+        fromUserId: data?.fromUserId,
+        toUserId: data?.toUserId,
+      });
       const validation = validateCallSignal({
         ...data,
         fromUserId: data.fromUserId || data.callerId,
@@ -513,9 +553,16 @@ async function startServer() {
         failCallSignal(data);
         return;
       }
+      if ((data.fromUserId || data.callerId) !== validation.call.callerId) {
+        failCallSignal(data);
+        return;
+      }
+      if (validation.call.endedAt) {
+        return;
+      }
       const now = Date.now();
       db.prepare(
-        "UPDATE call_logs SET status = ?, endedAt = COALESCE(endedAt, ?), endReason = ? WHERE id = ?",
+        "UPDATE call_logs SET status = ?, endedAt = ?, endReason = ? WHERE id = ?",
       ).run("missed", now, "no_answer", data.callId);
       const payload = {
         ...data,
@@ -581,6 +628,13 @@ async function startServer() {
     });
 
     socket.on("call:end", (data) => {
+      console.log("[CALL_END]", {
+        callId: data?.callId,
+        chatId: data?.chatId,
+        fromUserId: data?.fromUserId,
+        toUserId: data?.toUserId,
+        reason: data?.reason,
+      });
       const call = routeValidatedSignal("call:ended", data);
       if (!call) return;
       const now = Date.now();
@@ -1487,6 +1541,14 @@ async function startServer() {
     const { callerId, calleeId, chatId, type, status, startedAt } = req.body;
     const id = "call_" + Math.random().toString(36).substr(2, 9);
     const now = Date.now();
+    console.log("[CALL_CREATE]", {
+      id,
+      chatId,
+      callerId,
+      calleeId,
+      type,
+      status,
+    });
     db.prepare(
       "INSERT INTO call_logs (id, callerId, calleeId, chatId, type, status, createdAt, startedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     ).run(id, callerId, calleeId, chatId, type, status, now, startedAt || now);

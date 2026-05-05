@@ -217,13 +217,6 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   const startIncomingTimeout = (call: CallData) => {
     const timeoutId = window.setTimeout(() => {
       if (incomingCallRef.current?.callId !== call.callId) return;
-      emitSignal("call:missed", {
-        callId: call.callId,
-        chatId: call.chatId,
-        fromUserId: currentUser.id,
-        toUserId: call.callerId,
-        reason: "no_answer",
-      });
       setIncomingCall(null);
       setCallStatus("idle");
     }, 30000);
