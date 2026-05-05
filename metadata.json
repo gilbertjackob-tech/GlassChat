@@ -1,0 +1,10 @@
+{
+  "name": "WhatsClone",
+  "description": "A WhatsApp clone with real-time messaging, controllable via API or CLI.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": []
+}

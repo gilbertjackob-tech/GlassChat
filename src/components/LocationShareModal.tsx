@@ -1,0 +1,100 @@
+import React, { useState } from "react";
+import { X, MapPin, Navigation } from "lucide-react";
+
+export function LocationShareModal({
+  onClose,
+  onShare,
+}: {
+  onClose: () => void;
+  onShare: (isLive: boolean, durationMinutes?: number) => void;
+}) {
+  const [liveLocation, setLiveLocation] = useState(false);
+  const [duration, setDuration] = useState(15);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="bg-white dark:bg-[#202c33] rounded-xl w-full max-w-sm shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        <div className="flex justify-between items-center px-4 py-3 border-b border-slate-100 dark:border-[#2f3b43]">
+          <h3 className="font-semibold text-slate-800 dark:text-[#e9edef]">
+            Share Location
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-slate-500 hover:text-slate-700 dark:hover:text-[#e9edef] transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          <button
+            className="flex items-center w-full space-x-3 p-3 rounded-lg hover:bg-slate-50 dark:hover:bg-[#111b21] transition-colors"
+            onClick={() => onShare(false)}
+          >
+            <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0">
+              <MapPin className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+            </div>
+            <div className="flex flex-col text-left">
+              <span className="font-medium text-slate-800 dark:text-[#e9edef]">
+                Send your current location
+              </span>
+              <span className="text-xs text-slate-500 dark:text-[#8696a0]">
+                Accurate to a few meters
+              </span>
+            </div>
+          </button>
+
+          <button
+            className={`flex items-center w-full space-x-3 p-3 rounded-lg transition-colors ${liveLocation ? "bg-indigo-50 dark:bg-indigo-900/20" : "hover:bg-slate-50 dark:hover:bg-[#111b21]"}`}
+            onClick={() => setLiveLocation(!liveLocation)}
+          >
+            <div
+              className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${liveLocation ? "bg-indigo-100 dark:bg-indigo-900/40" : "bg-slate-100 dark:bg-slate-800"}`}
+            >
+              <Navigation
+                className={`w-5 h-5 ${liveLocation ? "text-indigo-600 dark:text-indigo-400" : "text-slate-500 dark:text-slate-400"}`}
+              />
+            </div>
+            <div className="flex flex-col text-left">
+              <span className="font-medium text-slate-800 dark:text-[#e9edef]">
+                Share live location
+              </span>
+              <span className="text-xs text-slate-500 dark:text-[#8696a0]">
+                Updates as you move
+              </span>
+            </div>
+          </button>
+
+          {liveLocation && (
+            <div className="pt-2 pl-14">
+              <label className="text-sm text-slate-600 dark:text-slate-400 mb-2 block">
+                Share for:
+              </label>
+              <div className="flex space-x-2">
+                {[15, 60, 480].map((mins) => (
+                  <button
+                    key={mins}
+                    onClick={() => setDuration(mins)}
+                    className={`px-3 py-1.5 rounded-full text-sm font-medium ${duration === mins ? "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300" : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400"}`}
+                  >
+                    {mins === 15
+                      ? "15 min"
+                      : mins === 60
+                        ? "1 hour"
+                        : "8 hours"}
+                  </button>
+                ))}
+              </div>
+              <button
+                className="mt-4 w-full bg-[#00a884] text-white py-2 rounded-lg font-medium hover:bg-[#008f6f]"
+                onClick={() => onShare(true, duration)}
+              >
+                Start Sharing
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
