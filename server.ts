@@ -117,10 +117,15 @@ db.exec(`
     chatId TEXT,
     type TEXT,
     status TEXT,
+    createdAt INTEGER,
     startedAt INTEGER,
+    ringingAt INTEGER,
+    acceptedAt INTEGER,
+    connectedAt INTEGER,
     answeredAt INTEGER,
     endedAt INTEGER,
-    durationSeconds INTEGER
+    durationSeconds INTEGER,
+    endReason TEXT
   );
 `);
 
@@ -131,6 +136,11 @@ try { db.prepare("ALTER TABLE users ADD COLUMN lastActive INTEGER").run(); } cat
 try { db.prepare("ALTER TABLE users ADD COLUMN lastActivePrivacy TEXT").run(); } catch(e){}
 try { db.prepare("ALTER TABLE messages ADD COLUMN attachmentName TEXT").run(); } catch(e){}
 try { db.prepare("ALTER TABLE messages ADD COLUMN attachmentSize INTEGER").run(); } catch(e){}
+try { db.prepare("ALTER TABLE call_logs ADD COLUMN createdAt INTEGER").run(); } catch(e){}
+try { db.prepare("ALTER TABLE call_logs ADD COLUMN ringingAt INTEGER").run(); } catch(e){}
+try { db.prepare("ALTER TABLE call_logs ADD COLUMN acceptedAt INTEGER").run(); } catch(e){}
+try { db.prepare("ALTER TABLE call_logs ADD COLUMN connectedAt INTEGER").run(); } catch(e){}
+try { db.prepare("ALTER TABLE call_logs ADD COLUMN endReason TEXT").run(); } catch(e){}
 
 // Helper to sanitize filenames
 function sanitizeFilename(name: string) {
@@ -221,6 +231,106 @@ function loadMessages(chatId?: string) {
   return msgs;
 }
 
+function isUserOnline(userId: string) {
+  return Array.from(connectedSockets.values()).includes(userId);
+}
+
+function getCall(callId: string) {
+  return db.prepare("SELECT * FROM call_logs WHERE id = ?").get(callId) as any;
+}
+
+function isMember(chatId: string, userId: string) {
+  return !!db
+    .prepare("SELECT 1 FROM chat_members WHERE chatId = ? AND userId = ?")
+    .get(chatId, userId);
+}
+
+function getCallHistoryForUser(userId: string) {
+  const calls = db
+    .prepare(
+      "SELECT * FROM call_logs WHERE callerId = ? OR calleeId = ? ORDER BY createdAt DESC, startedAt DESC LIMIT 50",
+    )
+    .all(userId, userId) as any[];
+  const users = db
+    .prepare(
+      "SELECT id, name, avatar, phone, email, lastActive, lastActivePrivacy FROM users",
+    )
+    .all() as any[];
+  const usersById = new Map(users.map((user) => [user.id, user]));
+
+  return calls.map((call) => {
+    const direction = call.callerId === userId ? "outgoing" : "incoming";
+    const otherUserId = direction === "outgoing" ? call.calleeId : call.callerId;
+    const other = usersById.get(otherUserId) || {
+      id: otherUserId,
+      name: "Unknown User",
+    };
+
+    return {
+      id: call.id,
+      chatId: call.chatId,
+      callerId: call.callerId,
+      calleeId: call.calleeId,
+      type: call.type,
+      direction,
+      status: call.status,
+      startedAt: call.startedAt,
+      ringingAt: call.ringingAt,
+      acceptedAt: call.acceptedAt || call.answeredAt,
+      connectedAt: call.connectedAt,
+      endedAt: call.endedAt,
+      durationSeconds: call.durationSeconds,
+      endReason: call.endReason,
+      otherUser: {
+        id: other.id,
+        name: other.name,
+        avatar: other.avatar,
+        phone: other.phone,
+        email: other.email,
+        online: isUserOnline(other.id),
+        lastActive: other.lastActive,
+        privacy: other.lastActivePrivacy || "everyone",
+      },
+    };
+  });
+}
+
+function validateCallSignal(data: any): { ok: true; call: any } | { ok: false; reason: string } {
+  if (!data?.callId || !data?.chatId || !data?.fromUserId || !data?.toUserId) {
+    return { ok: false, reason: "missing_required_fields" };
+  }
+
+  const call = getCall(String(data.callId));
+  if (!call) return { ok: false, reason: "call_not_found" };
+  if (call.chatId !== data.chatId) return { ok: false, reason: "chat_mismatch" };
+
+  const participantIds = [call.callerId, call.calleeId];
+  if (!participantIds.includes(data.fromUserId)) {
+    return { ok: false, reason: "invalid_from_user" };
+  }
+  if (!participantIds.includes(data.toUserId)) {
+    return { ok: false, reason: "invalid_to_user" };
+  }
+  if (data.fromUserId === data.toUserId) {
+    return { ok: false, reason: "same_from_to_user" };
+  }
+  if (!isMember(data.chatId, data.fromUserId) || !isMember(data.chatId, data.toUserId)) {
+    return { ok: false, reason: "not_chat_members" };
+  }
+
+  return { ok: true, call };
+}
+
+function finalStatusFromReason(reason: string, wasConnected: boolean) {
+  if (wasConnected) return "ended";
+  if (reason === "busy") return "busy";
+  if (reason === "missed" || reason === "no_answer") return "missed";
+  if (reason === "declined") return "declined";
+  if (reason === "unavailable") return "unavailable";
+  if (reason === "failed" || reason === "network_lost") return "failed";
+  return "ended";
+}
+
 async function startServer() {
   const app = express();
 
@@ -301,15 +411,216 @@ async function startServer() {
       socket.to(data.chatId).emit("call_ended", data),
     );
 
+    const failCallSignal = (data: any, reason = "invalid_signal") => {
+      socket.emit("call:failed", {
+        callId: data?.callId,
+        chatId: data?.chatId,
+        reason,
+      });
+    };
+
+    const routeValidatedSignal = (event: string, data: any) => {
+      const validation = validateCallSignal(data);
+      if (!validation.ok) {
+        failCallSignal(data);
+        return null;
+      }
+
+      console.log("[WEBRTC_SIGNAL_ROUTE]", {
+        event,
+        callId: data.callId,
+        chatId: data.chatId,
+        fromUserId: data.fromUserId,
+        toUserId: data.toUserId,
+      });
+      io.in(data.toUserId).emit(event, data);
+      return validation.call;
+    };
+
     // Modern WebRTC signaling
-    socket.on("call:start", (data) => socket.to(data.chatId).emit("call:start", data));
-    socket.on("call:offer", (data) => socket.to(data.chatId).emit("call:offer", data));
-    socket.on("call:answer", (data) => socket.to(data.chatId).emit("call:answer", data));
-    socket.on("call:ice-candidate", (data) => socket.to(data.chatId).emit("call:ice-candidate", data));
-    socket.on("call:ringing", (data) => socket.to(data.chatId).emit("call:ringing", data));
-    socket.on("call:reject", (data) => socket.to(data.chatId).emit("call:reject", data));
-    socket.on("call:end", (data) => socket.to(data.chatId).emit("call:end", data));
-    socket.on("call:failed", (data) => socket.to(data.chatId).emit("call:failed", data));
+    socket.on("call:start", (data) => {
+      const validation = validateCallSignal(data);
+      if (!validation.ok) {
+        failCallSignal(data);
+        return;
+      }
+
+      if (!isUserOnline(data.toUserId)) {
+        const now = Date.now();
+        db.prepare(
+          "UPDATE call_logs SET status = ?, endedAt = ?, endReason = ? WHERE id = ?",
+        ).run("unavailable", now, "unavailable", data.callId);
+        io.in(data.fromUserId).emit("call:unavailable", {
+          ...data,
+          reason: "unavailable",
+        });
+        return;
+      }
+
+      db.prepare(
+        "UPDATE call_logs SET status = ?, startedAt = COALESCE(startedAt, ?), createdAt = COALESCE(createdAt, ?) WHERE id = ?",
+      ).run("outgoing_calling", Date.now(), Date.now(), data.callId);
+      routeValidatedSignal("call:start", data);
+    });
+
+    socket.on("call:offer", (data) => routeValidatedSignal("call:offer", data));
+    socket.on("call:answer", (data) => routeValidatedSignal("call:answer", data));
+    socket.on("call:ice-candidate", (data) =>
+      routeValidatedSignal("call:ice-candidate", data),
+    );
+
+    socket.on("call:ringing", (data) => {
+      const call = routeValidatedSignal("call:ringing", data);
+      if (!call) return;
+      db.prepare(
+        "UPDATE call_logs SET status = ?, ringingAt = COALESCE(ringingAt, ?) WHERE id = ?",
+      ).run("outgoing_ringing", Date.now(), data.callId);
+    });
+
+    socket.on("call:accepted", (data) => {
+      const call = routeValidatedSignal("call:accepted", data);
+      if (!call) return;
+      db.prepare(
+        "UPDATE call_logs SET status = ?, acceptedAt = COALESCE(acceptedAt, ?), answeredAt = COALESCE(answeredAt, ?) WHERE id = ?",
+      ).run("connecting", Date.now(), Date.now(), data.callId);
+    });
+
+    socket.on("call:connected", (data) => {
+      const call = routeValidatedSignal("call:connected", data);
+      if (!call) return;
+      const now = Date.now();
+      db.prepare(
+        "UPDATE call_logs SET status = ?, connectedAt = COALESCE(connectedAt, ?), acceptedAt = COALESCE(acceptedAt, ?), answeredAt = COALESCE(answeredAt, ?) WHERE id = ?",
+      ).run("connected", now, now, now, data.callId);
+    });
+
+    socket.on("call:busy", (data) => {
+      const validation = validateCallSignal({
+        ...data,
+        fromUserId: data.fromUserId || data.calleeId,
+        toUserId: data.toUserId || data.callerId,
+      });
+      if (!validation.ok) {
+        failCallSignal(data);
+        return;
+      }
+      const now = Date.now();
+      db.prepare(
+        "UPDATE call_logs SET status = ?, endedAt = ?, endReason = ? WHERE id = ?",
+      ).run("busy", now, "busy", data.callId);
+      io.in(validation.call.callerId).emit("call:busy", {
+        ...data,
+        fromUserId: validation.call.calleeId,
+        toUserId: validation.call.callerId,
+      });
+    });
+
+    socket.on("call:missed", (data) => {
+      const validation = validateCallSignal({
+        ...data,
+        fromUserId: data.fromUserId || data.callerId,
+        toUserId: data.toUserId || data.calleeId,
+      });
+      if (!validation.ok) {
+        failCallSignal(data);
+        return;
+      }
+      const now = Date.now();
+      db.prepare(
+        "UPDATE call_logs SET status = ?, endedAt = COALESCE(endedAt, ?), endReason = ? WHERE id = ?",
+      ).run("missed", now, "no_answer", data.callId);
+      const payload = {
+        ...data,
+        fromUserId: validation.call.callerId,
+        toUserId: validation.call.calleeId,
+        reason: "no_answer",
+      };
+      io.in(validation.call.callerId).emit("call:missed", payload);
+      io.in(validation.call.calleeId).emit("call:missed", payload);
+    });
+
+    socket.on("call:unavailable", (data) => {
+      const validation = validateCallSignal(data);
+      if (!validation.ok) {
+        failCallSignal(data);
+        return;
+      }
+      const now = Date.now();
+      db.prepare(
+        "UPDATE call_logs SET status = ?, endedAt = ?, endReason = ? WHERE id = ?",
+      ).run("unavailable", now, "unavailable", data.callId);
+      io.in(validation.call.callerId).emit("call:unavailable", {
+        ...data,
+        reason: "unavailable",
+      });
+    });
+
+    socket.on("call:declined", (data) => {
+      const validation = validateCallSignal(data);
+      if (!validation.ok) {
+        failCallSignal(data);
+        return;
+      }
+      const now = Date.now();
+      db.prepare(
+        "UPDATE call_logs SET status = ?, endedAt = ?, endReason = ? WHERE id = ?",
+      ).run("declined", now, "declined", data.callId);
+      io.in(validation.call.callerId).emit("call:declined", {
+        ...data,
+        reason: "declined",
+      });
+    });
+
+    socket.on("call:reject", (data) => {
+      const normalized = {
+        ...data,
+        fromUserId: data.fromUserId || data.calleeId,
+        toUserId: data.toUserId || data.callerId,
+      };
+      const validation = validateCallSignal(normalized);
+      if (!validation.ok) {
+        failCallSignal(data);
+        return;
+      }
+      const now = Date.now();
+      db.prepare(
+        "UPDATE call_logs SET status = ?, endedAt = ?, endReason = ? WHERE id = ?",
+      ).run("declined", now, "declined", normalized.callId);
+      io.in(validation.call.callerId).emit("call:declined", {
+        ...normalized,
+        reason: "declined",
+      });
+    });
+
+    socket.on("call:end", (data) => {
+      const call = routeValidatedSignal("call:ended", data);
+      if (!call) return;
+      const now = Date.now();
+      const reason = data.reason || "ended";
+      const connectedAt = call.connectedAt || data.connectedAt;
+      const wasConnected = !!connectedAt;
+      const status = finalStatusFromReason(reason, wasConnected);
+      const durationSeconds = wasConnected
+        ? Math.max(0, Math.floor((now - Number(connectedAt)) / 1000))
+        : null;
+
+      db.prepare(
+        "UPDATE call_logs SET status = ?, endedAt = ?, durationSeconds = COALESCE(?, durationSeconds), endReason = ? WHERE id = ?",
+      ).run(status, now, durationSeconds, reason, data.callId);
+    });
+
+    socket.on("call:failed", (data) => {
+      const validation = validateCallSignal(data);
+      if (!validation.ok) {
+        failCallSignal(data);
+        return;
+      }
+      const now = Date.now();
+      db.prepare(
+        "UPDATE call_logs SET status = ?, endedAt = ?, endReason = ? WHERE id = ?",
+      ).run("failed", now, data.reason || "failed", data.callId);
+      io.in(data.toUserId).emit("call:failed", data);
+    });
 
     socket.on(
       "mark_messages_read",
@@ -1175,33 +1486,39 @@ async function startServer() {
   });
 
   app.get("/api/calls", (req, res) => {
-    const userId = req.query.userId;
-    if (!userId) return res.status(400).json({ error: "userId required" });
-    const calls = db
-      .prepare("SELECT * FROM call_logs WHERE callerId = ? OR calleeId = ? ORDER BY startedAt DESC LIMIT 50")
-      .all(userId, userId);
-    res.json(calls);
+    const userId = String(req.query.userId || "");
+    if (!userId) return res.status(400).json({ error: "userId is required" });
+    res.json(getCallHistoryForUser(userId));
+  });
+
+  app.get("/api/calls/:userId", (req, res) => {
+    res.json(getCallHistoryForUser(req.params.userId));
   });
 
   app.post("/api/calls", (req, res) => {
     const { callerId, calleeId, chatId, type, status, startedAt } = req.body;
     const id = "call_" + Math.random().toString(36).substr(2, 9);
+    const now = Date.now();
     db.prepare(
-      "INSERT INTO call_logs (id, callerId, calleeId, chatId, type, status, startedAt) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    ).run(id, callerId, calleeId, chatId, type, status, startedAt || Date.now());
+      "INSERT INTO call_logs (id, callerId, calleeId, chatId, type, status, createdAt, startedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(id, callerId, calleeId, chatId, type, status, now, startedAt || now);
     res.status(201).json({ id });
   });
 
   app.patch("/api/calls/:id", (req, res) => {
     const { id } = req.params;
-    const { status, answeredAt, endedAt, durationSeconds } = req.body;
+    const { status, ringingAt, acceptedAt, connectedAt, answeredAt, endedAt, durationSeconds, endReason } = req.body;
     let updateFields: string[] = [];
     let params: any[] = [];
 
     if (status) { updateFields.push("status = ?"); params.push(status); }
+    if (ringingAt) { updateFields.push("ringingAt = ?"); params.push(ringingAt); }
+    if (acceptedAt) { updateFields.push("acceptedAt = ?"); params.push(acceptedAt); }
+    if (connectedAt) { updateFields.push("connectedAt = ?"); params.push(connectedAt); }
     if (answeredAt) { updateFields.push("answeredAt = ?"); params.push(answeredAt); }
     if (endedAt) { updateFields.push("endedAt = ?"); params.push(endedAt); }
     if (durationSeconds !== undefined) { updateFields.push("durationSeconds = ?"); params.push(durationSeconds); }
+    if (endReason) { updateFields.push("endReason = ?"); params.push(endReason); }
 
     if (updateFields.length > 0) {
       params.push(id);

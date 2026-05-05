@@ -36,6 +36,53 @@ export interface Chat {
   deletedFor?: string[];
 }
 
+export type CallStatus =
+  | "idle"
+  | "outgoing_calling"
+  | "outgoing_ringing"
+  | "incoming_ringing"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "ended"
+  | "declined"
+  | "missed"
+  | "failed"
+  | "busy"
+  | "unavailable";
+
+export interface CallData {
+  callId: string;
+  chatId: string;
+  callerId: string;
+  callerName: string;
+  callerAvatar?: string;
+  calleeId: string;
+  calleeName?: string;
+  calleeAvatar?: string;
+  isVideo: boolean;
+  status?: CallStatus;
+  offer?: RTCSessionDescriptionInit;
+}
+
+export interface CallHistoryItem {
+  id: string;
+  chatId: string;
+  callerId: string;
+  calleeId: string;
+  type: "audio" | "video";
+  direction: "incoming" | "outgoing";
+  status: CallStatus;
+  startedAt: number;
+  ringingAt?: number;
+  acceptedAt?: number;
+  connectedAt?: number;
+  endedAt?: number;
+  durationSeconds?: number;
+  endReason?: string;
+  otherUser: User;
+}
+
 export interface LocationData {
   lat: number;
   lng: number;

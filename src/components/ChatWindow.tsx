@@ -53,6 +53,7 @@ function formatBytes(bytes?: number, decimals = 2) {
 }
 
 interface ChatWindowProps {
+  key?: React.Key;
   chat: Chat;
   currentUser: User;
   onToggleSidebar?: () => void;
@@ -549,17 +550,18 @@ export function ChatWindow({
 
   const initiateCall = (isVideo: boolean) => {
     if (!socket) return;
-    const calleeId = !chat.isGroup 
-      ? chat.participants?.find((p) => p.id !== currentUser.id)?.id
+    const other = !chat.isGroup
+      ? chat.participants?.find((p) => p.id !== currentUser.id)
       : undefined;
+    if (!other) return;
 
     window.dispatchEvent(
       new CustomEvent("START_CALL", {
         detail: {
           chatId: chat.id,
-          callerId: currentUser.id,
-          callerName: chatName,
-          calleeId,
+          calleeId: other.id,
+          calleeName: other.name,
+          calleeAvatar: other.avatar,
           isVideo,
         },
       }),

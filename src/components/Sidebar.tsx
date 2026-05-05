@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import CryptoJS from "crypto-js";
 import { useSocket } from "../SocketContext";
-import { Chat, User, Contact } from "../types";
+import { CallHistoryItem, Chat, User, Contact } from "../types";
 import {
   fetchChats,
   createChat,
@@ -406,7 +406,7 @@ export function Sidebar({
   const contactsVisible = showContacts || isContactsTab;
 
   // Calls pane state
-  const [callLogs, setCallLogs] = useState<any[]>([]);
+  const [callLogs, setCallLogs] = useState<CallHistoryItem[]>([]);
   useEffect(() => {
     if (showCalls) {
       if (typeof window !== "undefined") {
@@ -1253,30 +1253,44 @@ export function Sidebar({
             </div>
           ) : (
             <div className="flex flex-col">
-               {callLogs.map((log: any) => {
-                 const isIncoming = log.calleeId === currentUser.id;
-                 const otherUserId = isIncoming ? log.callerId : log.calleeId;
+               {callLogs.map((log) => {
+                 const isIncoming = log.direction
+                   ? log.direction === "incoming"
+                   : log.calleeId === currentUser.id;
+                 const otherUser = log.otherUser;
+                 const otherName = otherUser?.name || (isIncoming ? log.callerId : log.calleeId);
                  const typeLabel = log.type === "video" ? "Video" : "Audio";
                  
                  // Get display text for status/duration
-                 let statusText = log.status;
-                 if (log.status === "ended" && log.durationSeconds !== null) {
+                 let statusText: string = log.status;
+                 if (log.status === "ended" && log.durationSeconds !== undefined && log.durationSeconds !== null) {
                     const mins = Math.floor(log.durationSeconds / 60);
                     const secs = log.durationSeconds % 60;
                     statusText = `Duration: ${mins}:${secs.toString().padStart(2, "0")}`;
-                 } else if (log.status === "rejected") {
-                    statusText = "Missed / Rejected";
+                 } else if (log.status === "declined") {
+                    statusText = "Call declined";
+                 } else if (log.status === "missed") {
+                    statusText = "Missed call";
+                 } else if (log.status === "busy") {
+                    statusText = "User busy";
+                 } else if (log.status === "unavailable") {
+                    statusText = "Unavailable";
                  }
+                 const isProblemStatus = ["declined", "missed", "busy", "failed", "unavailable"].includes(log.status);
 
                  return (
                    <div key={log.id} className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-                     <div className="w-12 h-12 rounded-full bg-slate-300 dark:bg-slate-700 flex items-center justify-center text-slate-500 shrink-0">
-                       <UserIcon className="w-6 h-6" />
+                     <div className="w-12 h-12 rounded-full bg-slate-300 dark:bg-slate-700 flex items-center justify-center text-slate-500 shrink-0 overflow-hidden">
+                       {otherUser?.avatar ? (
+                         <img src={otherUser.avatar} alt={otherName} className="w-full h-full object-cover" />
+                       ) : (
+                         <UserIcon className="w-6 h-6" />
+                       )}
                      </div>
                      <div className="flex-1 ml-4 line-clamp-1">
                        <div className="flex items-center justify-between">
-                         <h3 className={cn("font-bold text-[15px] dark:text-slate-200 text-slate-800", log.status === "rejected" ? "text-red-500" : "")}>
-                           {otherUserId}
+                         <h3 className={cn("font-bold text-[15px] dark:text-slate-200 text-slate-800", isProblemStatus ? "text-red-500" : "")}>
+                           {otherName}
                          </h3>
                          <span className="text-xs text-slate-400">
                            {format(new Date(log.startedAt), "MMM d, HH:mm")}
@@ -1285,18 +1299,21 @@ export function Sidebar({
                        <div className="flex items-center justify-between mt-1">
                          <div className="flex items-center space-x-2 text-sm text-slate-500">
                             {isIncoming ? (
-                               <ArrowLeft className={cn("w-4 h-4", log.status === "rejected" ? "text-red-500" : "text-emerald-500")} />
+                               <ArrowLeft className={cn("w-4 h-4", isProblemStatus ? "text-red-500" : "text-emerald-500")} />
                             ) : (
-                               <ArrowLeft className={cn("w-4 h-4 rotate-180", log.status === "rejected" ? "text-red-500" : "text-emerald-500")} />
+                               <ArrowLeft className={cn("w-4 h-4 rotate-180", isProblemStatus ? "text-red-500" : "text-emerald-500")} />
                             )}
-                            <span className="capitalize">{statusText}</span>
+                            <span className="capitalize">{typeLabel} • {statusText}</span>
                          </div>
                          <div className="flex items-center space-x-2">
                            <button onClick={async () => {
                              // Find the matching chat
                              const { fetchChats } = await import("../api");
-                             const allChats = await fetchChats();
+                             const allChats = await fetchChats(currentUser.id);
                              const matchingChat = allChats.find(c => c.id === log.chatId);
+                             const other = matchingChat && !matchingChat.isGroup
+                               ? matchingChat.participants?.find((p: any) => p.id !== currentUser.id)
+                               : undefined;
                              if (matchingChat) {
                                onSelectChat(matchingChat);
                                setTimeout(() => {
@@ -1304,9 +1321,9 @@ export function Sidebar({
                                   new CustomEvent("START_CALL", {
                                     detail: {
                                       chatId: matchingChat.id,
-                                      callerId: currentUser.id,
-                                      callerName: currentUser.name,
-                                      calleeId: !matchingChat.isGroup ? matchingChat.participants?.find((p: any) => p.id !== currentUser.id)?.id : undefined,
+                                      calleeId: other?.id || otherUser?.id,
+                                      calleeName: other?.name || otherName,
+                                      calleeAvatar: other?.avatar || otherUser?.avatar,
                                       isVideo: log.type === "video",
                                     },
                                   }),
