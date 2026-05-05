@@ -1539,6 +1539,18 @@ async function startServer() {
 
   app.post("/api/calls", (req, res) => {
     const { callerId, calleeId, chatId, type, status, startedAt } = req.body;
+    if (!callerId || !calleeId || !chatId) {
+      return res
+        .status(400)
+        .json({ error: "callerId, calleeId, and chatId are required" });
+    }
+    if (callerId === calleeId) {
+      return res.status(400).json({ error: "callerId and calleeId must differ" });
+    }
+    if (!isMember(chatId, callerId) || !isMember(chatId, calleeId)) {
+      return res.status(403).json({ error: "call participants must be chat members" });
+    }
+
     const id = "call_" + Math.random().toString(36).substr(2, 9);
     const now = Date.now();
     console.log("[CALL_CREATE]", {

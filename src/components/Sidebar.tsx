@@ -1256,7 +1256,7 @@ export function Sidebar({
           {callLogs.length === 0 ? (
             <div className="flex flex-col items-center justify-center p-8 text-center text-slate-500 dark:text-[#8696a0] h-full">
               <Phone className="w-16 h-16 mb-4 text-slate-300 dark:text-slate-600" />
-              <p>No recent calls</p>
+              <p>No calls yet</p>
             </div>
           ) : (
             <div className="flex flex-col">

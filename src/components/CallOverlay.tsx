@@ -149,6 +149,13 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     };
   };
 
+  const getIncomingOffer = (call: CallData) => {
+    const offerData = pendingOffersRef.current.get(call.callId);
+    const offer = call.offer || offerData?.offer;
+    const fromUserId = offerData?.fromUserId || call.callerId;
+    return offer && fromUserId ? { offer, fromUserId } : null;
+  };
+
   const attachPeerHandlers = (pc: RTCPeerConnection, call: CallData) => {
     pc.ontrack = (event) => {
       const stream = event.streams[0];
@@ -464,10 +471,9 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       return;
     }
 
-    const offerData = pendingOffersRef.current.get(incomingCall.callId);
-    const offer = incomingCall.offer || offerData?.offer;
-    if (!offer || !offerData?.fromUserId) {
-      setHasError("Call offer was not received. Ask the caller to try again.");
+    const offerData = getIncomingOffer(incomingCall);
+    if (!offerData) {
+      setHasError("Preparing call. Please wait...");
       window.setTimeout(() => setHasError(""), 3000);
       return;
     }
@@ -499,7 +505,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       attachPeerHandlers(pc, incomingCall);
 
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      await pc.setRemoteDescription(new RTCSessionDescription(offerData.offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       emitSignal("call:answer", {
@@ -566,6 +572,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
 
   const displayCall = activeCall || incomingCall;
   const isCaller = displayCall?.callerId === currentUser.id;
+  const hasIncomingOffer = incomingCall ? !!getIncomingOffer(incomingCall) : false;
   const otherName = useMemo(() => {
     if (!displayCall) return "Call";
     return isCaller
@@ -623,13 +630,25 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
             Incoming {incomingCall.isVideo ? "Video" : "Audio"} Call
           </h2>
           <p className="text-slate-400 mb-2">{otherName}</p>
-          <p className="text-emerald-400 text-sm mb-8">{statusLabel}</p>
+          <p className="text-emerald-400 text-sm mb-8">
+            {hasIncomingOffer ? statusLabel : "Preparing call..."}
+          </p>
 
           <div className="flex space-x-6">
             <button onClick={declineCall} className="w-14 h-14 rounded-full bg-red-500 flex items-center justify-center text-white hover:bg-red-600 hover:scale-105 transition-all shadow-lg hover:shadow-red-500/50">
               <PhoneOff className="w-6 h-6" />
             </button>
-            <button onClick={acceptCall} className="w-14 h-14 rounded-full bg-emerald-500 flex items-center justify-center text-white hover:bg-emerald-600 hover:scale-105 transition-all shadow-lg hover:shadow-emerald-500/50 animate-pulse">
+            <button
+              onClick={acceptCall}
+              disabled={!hasIncomingOffer}
+              title={hasIncomingOffer ? "Accept call" : "Preparing call..."}
+              className={cn(
+                "w-14 h-14 rounded-full flex items-center justify-center text-white transition-all shadow-lg",
+                hasIncomingOffer
+                  ? "bg-emerald-500 hover:bg-emerald-600 hover:scale-105 hover:shadow-emerald-500/50 animate-pulse"
+                  : "bg-slate-600 cursor-not-allowed opacity-60",
+              )}
+            >
               {incomingCall.isVideo ? <VideoIcon className="w-6 h-6" /> : <Phone className="w-6 h-6" />}
             </button>
           </div>
