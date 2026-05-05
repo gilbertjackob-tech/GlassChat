@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import {
   Camera,
   Maximize2,
@@ -76,6 +77,55 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   const [localResolution, setLocalResolution] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  // Audio Context for ringtones
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const ringerIntervalRef = useRef<number | null>(null);
+
+  const playRingtone = useCallback((type: "incoming" | "outgoing") => {
+    try {
+      if (!audioCtxRef.current) {
+          audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === "suspended") ctx.resume();
+
+      const playBeep = () => {
+          if (ctx.state === "suspended") return;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          
+          osc.type = type === "incoming" ? "sine" : "triangle";
+          osc.frequency.setValueAtTime(type === "incoming" ? 440 : 480, ctx.currentTime);
+          if (type === "incoming") {
+              osc.frequency.setValueAtTime(554, ctx.currentTime + 0.2);
+          } else {
+              osc.frequency.setValueAtTime(420, ctx.currentTime + 0.4);
+          }
+
+          gain.gain.setValueAtTime(0, ctx.currentTime);
+          gain.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 0.05);
+          gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.8);
+
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 1);
+      };
+
+      if (ringerIntervalRef.current) window.clearInterval(ringerIntervalRef.current);
+      playBeep();
+      ringerIntervalRef.current = window.setInterval(playBeep, type === "incoming" ? 2000 : 3000);
+    } catch(err) { console.warn("AudioContext failed", err); }
+  }, []);
+
+  const stopRingtone = useCallback(() => {
+    if (ringerIntervalRef.current) {
+        window.clearInterval(ringerIntervalRef.current);
+        ringerIntervalRef.current = null;
+    }
+  }, []);
+
+
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
@@ -112,8 +162,15 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   }, [incomingCall]);
 
   useEffect(() => {
+    if (callStatus === "incoming_ringing") {
+        playRingtone("incoming");
+    } else if (callStatus === "outgoing_ringing") {
+        playRingtone("outgoing");
+    } else {
+        stopRingtone();
+    }
     callStatusRef.current = callStatus;
-  }, [callStatus]);
+  }, [callStatus, playRingtone, stopRingtone]);
 
   useEffect(() => {
     screenStreamRef.current = screenStream;
@@ -167,6 +224,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       pcRef.current.close();
       pcRef.current = null;
     }
+    stopRingtone();
     stopBeauty();
     stopTracks(screenStreamRef.current);
     stopTracks(localStreamRef.current);
@@ -279,7 +337,8 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   };
 
   const getCameraStreamWithFallback = async (isVideo: boolean, quality: "auto" | "720p" | "1080p" | "2k") => {
-    if (!isVideo) return { stream: await navigator.mediaDevices.getUserMedia({ audio: true, video: false }), quality: "auto" as const };
+    const audioConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+    if (!isVideo) return { stream: await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false }), quality: "auto" as const };
     
     const qualityOrder = quality === "2k" ? ["2k", "1080p", "720p", "auto"] as const
       : quality === "1080p" ? ["1080p", "720p", "auto"] as const
@@ -289,7 +348,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     for (const q of qualityOrder) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
+          audio: audioConstraints,
           video: getVideoConstraints(q)
         });
         return { stream, quality: q };
@@ -1050,6 +1109,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         }
       }
 
+      // Preserve audio config if possible, but fallback is ok
       const audioTracks = localStreamRef.current?.getAudioTracks() || [];
       const combinedStream = new MediaStream([...audioTracks, ...(nextTrack ? [nextTrack] : [])]);
       localStreamRef.current = combinedStream;
@@ -1160,7 +1220,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                         : "";
 
   const renderAvatar = (sizeClass: string) => (
-    <div className={cn("rounded-full bg-slate-800 flex items-center justify-center overflow-hidden", sizeClass)}>
+    <div className={cn("rounded-full bg-slate-800 flex items-center justify-center overflow-hidden border border-slate-700 shadow-xl", sizeClass)}>
       {otherAvatar ? (
         <img src={otherAvatar} alt={otherName} className="w-full h-full object-cover" />
       ) : (
@@ -1174,25 +1234,34 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   if (activeCall && isMinimized) {
     const showMiniVideo = activeCall.isVideo && remoteStream?.getVideoTracks()[0]?.enabled;
     return (
-      <>
+      <AnimatePresence>
         {hasError && (
-          <div className="fixed top-4 left-1/2 -translate-x-1/2 w-11/12 max-w-md bg-amber-100 border border-amber-300 text-amber-900 px-4 py-3 rounded-lg shadow-2xl z-50">
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 w-11/12 max-w-md bg-amber-100 border border-amber-300 text-amber-900 px-4 py-3 rounded-lg shadow-2xl z-50">
             <p className="font-bold text-sm">Call status</p>
             <p className="text-xs mt-1">{hasError}</p>
-          </div>
+          </motion.div>
         )}
-        <div
+        <motion.div
+          drag
+          dragMomentum={false}
+          whileDrag={{ scale: 1.05 }}
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.8 }}
           role="button"
           tabIndex={0}
           onClick={() => setIsMinimized(false)}
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " ") setIsMinimized(false);
           }}
+          style={{ position: 'fixed', zIndex: 40, bottom: 20, right: 20 }}
           className={cn(
-            "fixed z-40 bg-slate-950/95 text-white shadow-2xl border border-slate-700 backdrop-blur-md cursor-pointer",
+            "bg-slate-950/95 text-white shadow-2xl border border-slate-700 backdrop-blur-md cursor-pointer",
             activeCall.isVideo
-              ? "bottom-20 right-3 w-48 h-32 sm:bottom-4 sm:right-4 sm:w-64 sm:h-40 rounded-xl overflow-hidden"
-              : "bottom-20 right-3 left-3 sm:left-auto sm:bottom-4 sm:right-4 sm:w-80 rounded-full px-3 py-3",
+              ? "w-48 h-32 sm:w-64 sm:h-40 rounded-xl overflow-hidden"
+              : "w-80 rounded-full px-4 py-3",
           )}
         >
           {activeCall.isVideo ? (
@@ -1209,21 +1278,27 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                   {renderAvatar("w-16 h-16 text-2xl")}
                 </div>
               )}
+              {remoteQuality && remoteQuality !== "auto" && showMiniVideo && (
+                 <div className="absolute top-2 right-2 px-1.5 py-0.5 bg-black/60 rounded text-[10px] uppercase font-bold tracking-wider">{remoteQuality}</div>
+              )}
               <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent">
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">{otherName}</p>
-                    <p className="text-xs text-emerald-300 font-mono">{statusLabel}</p>
+                    <p className="text-[10px] text-emerald-300 font-mono flex items-center gap-1">
+                      {statusLabel}
+                      {remoteScreenSharing && <MonitorUp className="w-3 h-3 text-sky-400" />}
+                    </p>
                   </div>
                   <button
                     onClick={(event) => {
                       event.stopPropagation();
                       endActiveCall();
                     }}
-                    className="w-9 h-9 rounded-full bg-red-500 flex items-center justify-center shrink-0"
+                    className="w-9 h-9 rounded-full bg-red-500 hover:bg-red-600 transition-colors flex items-center justify-center shrink-0"
                     title="End call"
                   >
-                    <PhoneOff className="w-4 h-4" />
+                    <PhoneOff className="w-4 h-4 text-white" />
                   </button>
                 </div>
               </div>
@@ -1241,42 +1316,47 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                   event.stopPropagation();
                   endActiveCall();
                 }}
-                className="w-10 h-10 rounded-full bg-red-500 flex items-center justify-center shrink-0"
+                className="w-10 h-10 rounded-full bg-red-500 hover:bg-red-600 transition-colors flex items-center justify-center shrink-0"
                 title="End call"
               >
-                <PhoneOff className="w-5 h-5" />
+                <PhoneOff className="w-5 h-5 text-white" />
               </button>
             </div>
           )}
-        </div>
-      </>
+        </motion.div>
+      </AnimatePresence>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center backdrop-blur-sm p-4">
+    <AnimatePresence>
+    <motion.div 
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center backdrop-blur-sm p-4">
       {hasError && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 w-11/12 max-w-md bg-amber-100 border border-amber-300 text-amber-900 px-4 py-3 rounded-lg shadow-2xl z-50 animate-in slide-in-from-top-4">
+        <motion.div initial={{ y: -50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="absolute top-4 left-1/2 -translate-x-1/2 w-11/12 max-w-md bg-amber-100 border border-amber-300 text-amber-900 px-4 py-3 rounded-lg shadow-2xl z-50">
           <p className="font-bold text-sm">Call status</p>
           <p className="text-xs mt-1">{hasError}</p>
-        </div>
+        </motion.div>
       )}
 
       {incomingCall && !activeCall && (
-        <div className="bg-slate-900 rounded-2xl p-8 flex flex-col items-center shadow-2xl w-[320px] border border-slate-700 mx-4 shadow-[0_0_40px_rgba(79,70,229,0.2)] animate-in zoom-in duration-300">
+        <motion.div 
+          initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+          className="bg-slate-900 rounded-2xl p-8 flex flex-col items-center shadow-2xl w-[320px] border border-slate-700 mx-4 shadow-[0_0_40px_rgba(79,70,229,0.2)]">
           <div className="w-24 h-24 rounded-full bg-slate-800 flex items-center justify-center text-4xl mb-6 shadow-inner relative overflow-hidden">
             <span className="absolute inset-0 rounded-full animate-ping bg-indigo-500 opacity-20" />
             {otherAvatar ? (
-              <img src={otherAvatar} alt={otherName} className="w-full h-full object-cover" />
+              <img src={otherAvatar} alt={otherName} className="w-full h-full object-cover relative z-10" />
             ) : (
-              <span>{otherName.charAt(0).toUpperCase()}</span>
+              <span className="relative z-10 font-bold text-white">{otherName.charAt(0).toUpperCase()}</span>
             )}
           </div>
           <h2 className="text-white text-xl font-bold mb-2">
             Incoming {incomingCall.isVideo ? "Video" : "Audio"} Call
           </h2>
           <p className="text-slate-400 mb-2">{otherName}</p>
-          <p className="text-emerald-400 text-sm mb-8">
+          <p className="text-emerald-400 text-sm mb-8 font-mono">
             {hasIncomingOffer ? statusLabel : "Preparing call..."}
           </p>
 
@@ -1298,51 +1378,61 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
               {incomingCall.isVideo ? <VideoIcon className="w-6 h-6" /> : <Phone className="w-6 h-6" />}
             </button>
           </div>
-        </div>
+        </motion.div>
       )}
 
       {activeCall && (
-        <div
+        <motion.div
+          initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} transition={{ duration: 0.2 }}
           ref={containerRef}
-          className="w-full h-full md:w-[70%] md:h-[86%] md:rounded-2xl bg-black flex flex-col items-center shadow-2xl border border-slate-700 relative overflow-hidden animate-in fade-in zoom-in duration-300"
+          className="w-full h-full md:w-[85%] md:h-[90%] md:max-w-6xl md:rounded-2xl bg-black flex flex-col items-center shadow-[0_0_60px_rgba(0,0,0,0.6)] border border-slate-700 relative overflow-hidden"
         >
           <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
             <button
               onClick={() => setIsMinimized(true)}
-              className="w-11 h-11 rounded-full bg-slate-900/80 border border-slate-700 text-white flex items-center justify-center hover:bg-slate-800"
+              className="w-11 h-11 rounded-full bg-slate-900/80 border border-slate-700 text-white flex items-center justify-center hover:bg-slate-800 transition-colors backdrop-blur-md"
               title="Minimize call"
             >
               <Minimize2 className="w-5 h-5" />
             </button>
             <button
               onClick={toggleFullscreen}
-              className="w-11 h-11 rounded-full bg-slate-900/80 border border-slate-700 text-white flex items-center justify-center hover:bg-slate-800"
+              className="w-11 h-11 rounded-full bg-slate-900/80 border border-slate-700 text-white flex items-center justify-center hover:bg-slate-800 transition-colors backdrop-blur-md"
               title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
             >
               <Maximize2 className="w-5 h-5" />
             </button>
           </div>
+          
+          <div className="absolute top-4 right-4 z-20 flex flex-col items-end gap-2 text-xs font-mono">
+            {remoteQuality && remoteQuality !== "auto" && activeCall.isVideo && (
+                 <span className="px-2 py-1 bg-black/60 text-white rounded uppercase tracking-widest backdrop-blur-md border border-slate-700/50">{remoteQuality}</span>
+            )}
+            {remoteBeautyMode && remoteBeautyMode !== "off" && activeCall.isVideo && (
+                 <span className="px-2 py-1 bg-pink-500/80 text-white rounded flex items-center gap-1 backdrop-blur-md"><Sparkles className="w-3 h-3"/> Filter ON</span>
+            )}
+            {remoteScreenSharing && (
+               <span className="px-2 py-1 bg-emerald-500/90 text-white rounded shadow-lg backdrop-blur-md flex items-center gap-1">
+                 <MonitorUp className="w-3 h-3" /> {otherName} sharing screen
+               </span>
+            )}
+            {isScreenSharing && (
+               <span className="px-2 py-1 bg-sky-500/90 text-white rounded shadow-lg backdrop-blur-md flex items-center gap-1">
+                 <MonitorUp className="w-3 h-3" /> You are sharing screen
+               </span>
+            )}
+          </div>
 
-          <div className="flex-1 w-full flex items-center justify-center bg-slate-900 relative">
+          <div className="flex-1 w-full flex items-center justify-center bg-slate-900/50 relative">
             <video
               ref={remoteVideoRef}
               autoPlay
               playsInline
               className={cn(
-                "w-full h-full object-cover",
+                "w-full h-full object-contain",
                 (!activeCall.isVideo || !remoteStream?.getVideoTracks()[0]?.enabled) && "hidden",
               )}
             />
-            {remoteScreenSharing && (
-              <div className="absolute top-4 right-4 z-20 rounded-full bg-emerald-500/90 px-3 py-1 text-xs font-semibold text-white shadow-lg">
-                {otherName} is sharing screen
-              </div>
-            )}
-            {isScreenSharing && (
-              <div className="absolute top-16 right-4 z-20 rounded-full bg-sky-500/90 px-3 py-1 text-xs font-semibold text-white shadow-lg">
-                You are sharing screen
-              </div>
-            )}
             {(!activeCall.isVideo || !remoteStream?.getVideoTracks()[0]?.enabled) && (
               <div className="flex flex-col items-center px-6 text-center">
                 <div className="w-32 h-32 rounded-full bg-slate-800 border-4 border-slate-700 flex items-center justify-center text-5xl mb-6 text-white shadow-2xl relative overflow-hidden">
@@ -1354,13 +1444,27 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                   )}
                 </div>
                 <h2 className="text-white text-3xl font-bold mb-2">{otherName}</h2>
-                <p className="text-emerald-400 font-mono tracking-widest">{statusLabel}</p>
+                <p className="text-emerald-400 font-mono tracking-widest flex items-center justify-center gap-2">
+                  {statusLabel}
+                </p>
+                {activeCall.isVideo && !remoteStream?.getVideoTracks()[0]?.enabled && callStatus === "connected" && (
+                    <p className="mt-4 text-slate-400 text-sm flex items-center justify-center gap-2 relative z-20 bg-black/40 px-3 py-1.5 rounded-full border border-slate-700/50">
+                        <VideoOff className="w-4 h-4 text-amber-400" /> {otherName} turned off their camera
+                    </p>
+                )}
               </div>
             )}
           </div>
 
           {activeCall.isVideo && (
-            <div className="absolute top-4 right-4 w-24 h-32 sm:w-32 sm:h-48 bg-slate-800 rounded-lg overflow-hidden shadow-2xl border-2 border-slate-700">
+            <motion.div 
+               drag
+               dragConstraints={containerRef}
+               dragElastic={0}
+               dragMomentum={false}
+               className="absolute z-20 w-32 h-48 sm:w-48 sm:h-64 bg-slate-800 rounded-xl overflow-hidden shadow-2xl border border-slate-700 cursor-move"
+               style={{ bottom: "100px", right: "20px" }}
+            >
               <video
                 ref={localVideoRef}
                 autoPlay
@@ -1373,14 +1477,15 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                     "none",
                   transform: isScreenSharing ? "none" : "scaleX(-1)"
                 }}
-                className={cn("w-full h-full object-cover", isVideoOff && !isScreenSharing && "hidden")}
+                className={cn("w-full h-full object-cover pointer-events-none", isVideoOff && !isScreenSharing && "hidden")}
               />
               {isVideoOff && !isScreenSharing && (
-                <div className="w-full h-full flex items-center justify-center text-slate-500 bg-slate-900">
-                  <VideoOff className="w-8 h-8 opacity-50" />
+                <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 bg-slate-900 pointer-events-none">
+                  <VideoOff className="w-8 h-8 opacity-50 mb-2" />
+                  <span className="text-[10px] font-mono uppercase">Camera Off</span>
                 </div>
               )}
-            </div>
+            </motion.div>
           )}
 
           <div className="absolute bottom-0 inset-x-0 p-4 sm:p-6 flex flex-wrap justify-center gap-3 sm:gap-5 bg-gradient-to-t from-slate-900 via-slate-900/80 to-transparent">
@@ -1522,8 +1627,9 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
               </button>
             )}
           </div>
-        </div>
+        </motion.div>
       )}
-    </div>
+    </motion.div>
+    </AnimatePresence>
   );
 }
