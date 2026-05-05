@@ -2,6 +2,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import { Server as SocketIOServer } from "socket.io";
 import { createServer } from "http";
+import net from "net";
 import path from "path";
 import fs from "fs";
 import Database from "better-sqlite3";
@@ -1154,11 +1155,19 @@ async function startServer() {
     console.log("Socket connection error:", err);
   });
 
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
+  async function createDevServer() {
+    return createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: false,
+      },
       appType: "spa",
     });
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createDevServer();
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
@@ -1166,12 +1175,34 @@ async function startServer() {
     app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
-  httpServer.listen(PORT, HOST, () => {
+  async function findAvailablePort(startPort: number) {
+    for (let port = startPort; port <= 65535; port += 1) {
+      const isAvailable = await new Promise<boolean>((resolve) => {
+        const tester = net.createServer();
+        tester.unref();
+
+        tester.once("error", () => resolve(false));
+        tester.listen(port, HOST, () => {
+          tester.close(() => resolve(true));
+        });
+      });
+
+      if (isAvailable) {
+        return port;
+      }
+    }
+
+    throw new Error("No available ports found");
+  }
+
+  const actualPort = await findAvailablePort(PORT);
+
+  httpServer.listen(actualPort, HOST, () => {
     console.log(`\n=================================`);
     console.log(`  GlassChat Local Server     `);
     console.log(`=================================`);
-    console.log(`Local Access:      http://localhost:${PORT}`);
-    console.log(`Network/Tailscale: http://${HOST}:${PORT}`);
+    console.log(`Local Access:      http://localhost:${actualPort}`);
+    console.log(`Network/Tailscale: http://${HOST}:${actualPort}`);
     console.log(`Database Path:     ${DB_PATH}`);
     console.log(`Uploads Directory: ${UPLOAD_DIR}`);
     console.log(`=================================\n`);
