@@ -10,6 +10,7 @@ import {
   MonitorUp,
   Phone,
   PhoneOff,
+  PictureInPicture,
   RotateCcw,
   Settings,
   Sparkles,
@@ -91,30 +92,60 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
 
       const playBeep = () => {
           if (ctx.state === "suspended") return;
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.connect(gain);
-          gain.connect(ctx.destination);
           
-          osc.type = type === "incoming" ? "sine" : "triangle";
-          osc.frequency.setValueAtTime(type === "incoming" ? 440 : 480, ctx.currentTime);
-          if (type === "incoming") {
-              osc.frequency.setValueAtTime(554, ctx.currentTime + 0.2);
+          if (type === "outgoing") {
+              const osc1 = ctx.createOscillator();
+              const osc2 = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc1.connect(gain);
+              osc2.connect(gain);
+              gain.connect(ctx.destination);
+              
+              osc1.type = "sine";
+              osc2.type = "sine";
+              osc1.frequency.value = 440;
+              osc2.frequency.value = 480;
+              
+              gain.gain.setValueAtTime(0, ctx.currentTime);
+              gain.gain.linearRampToValueAtTime(0.03, ctx.currentTime + 0.1);
+              gain.gain.setValueAtTime(0.03, ctx.currentTime + 2.0);
+              gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 2.1);
+              
+              osc1.start(ctx.currentTime);
+              osc2.start(ctx.currentTime);
+              osc1.stop(ctx.currentTime + 2.1);
+              osc2.stop(ctx.currentTime + 2.1);
           } else {
-              osc.frequency.setValueAtTime(420, ctx.currentTime + 0.4);
+              const notes = [523.25, 659.25, 783.99, 1046.50];
+              const noteDuration = 0.15;
+              
+              const playSequence = (offset: number) => {
+                  notes.forEach((freq, i) => {
+                      const osc = ctx.createOscillator();
+                      const gain = ctx.createGain();
+                      osc.connect(gain);
+                      gain.connect(ctx.destination);
+                      osc.type = "sine";
+                      osc.frequency.value = freq;
+                      
+                      const startTime = ctx.currentTime + offset + (i * noteDuration);
+                      gain.gain.setValueAtTime(0, startTime);
+                      gain.gain.linearRampToValueAtTime(0.1, startTime + 0.02);
+                      gain.gain.exponentialRampToValueAtTime(0.001, startTime + noteDuration);
+                      
+                      osc.start(startTime);
+                      osc.stop(startTime + noteDuration);
+                  });
+              };
+              
+              playSequence(0);
+              playSequence(notes.length * noteDuration + 0.1);
           }
-
-          gain.gain.setValueAtTime(0, ctx.currentTime);
-          gain.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 0.05);
-          gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.8);
-
-          osc.start(ctx.currentTime);
-          osc.stop(ctx.currentTime + 1);
       };
 
       if (ringerIntervalRef.current) window.clearInterval(ringerIntervalRef.current);
       playBeep();
-      ringerIntervalRef.current = window.setInterval(playBeep, type === "incoming" ? 2000 : 3000);
+      ringerIntervalRef.current = window.setInterval(playBeep, type === "incoming" ? 3000 : 4000);
     } catch(err) { console.warn("AudioContext failed", err); }
   }, []);
 
@@ -1182,6 +1213,20 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     }
   };
 
+  const togglePiP = async () => {
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (remoteVideoRef.current && document.pictureInPictureEnabled && !remoteVideoRef.current.disablePictureInPicture) {
+        await remoteVideoRef.current.requestPictureInPicture();
+      }
+    } catch (err) {
+      console.error(err);
+      setHasError("Picture-in-Picture is not supported or was blocked");
+      setTimeout(() => setHasError(""), 3000);
+    }
+  };
+
   const displayCall = activeCall || incomingCall;
   const isCaller = displayCall?.callerId === currentUser.id;
   const hasIncomingOffer = incomingCall ? !!getIncomingOffer(incomingCall) : false;
@@ -1402,6 +1447,15 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
             >
               <Maximize2 className="w-5 h-5" />
             </button>
+            {activeCall.isVideo && (
+                <button
+                  onClick={togglePiP}
+                  className="w-11 h-11 rounded-full bg-slate-900/80 border border-slate-700 text-white flex items-center justify-center hover:bg-slate-800 transition-colors backdrop-blur-md"
+                  title="Picture-in-Picture"
+                >
+                  <PictureInPicture className="w-5 h-5" />
+                </button>
+            )}
           </div>
           
           <div className="absolute top-4 right-4 z-20 flex flex-col items-end gap-2 text-xs font-mono">
@@ -1424,12 +1478,20 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
           </div>
 
           <div className="flex-1 w-full flex items-center justify-center bg-slate-900/50 relative">
+            <div 
+               className="absolute inset-0 opacity-30 z-0 bg-cover bg-center" 
+               style={{ 
+                   backgroundImage: otherAvatar ? `url(${otherAvatar})` : 'none', 
+                   filter: 'blur(40px) brightness(0.6)' 
+               }} 
+            />
             <video
               ref={remoteVideoRef}
               autoPlay
               playsInline
+              onDoubleClick={toggleFullscreen}
               className={cn(
-                "w-full h-full object-contain",
+                "w-full h-full object-contain cursor-pointer relative z-10",
                 (!activeCall.isVideo || !remoteStream?.getVideoTracks()[0]?.enabled) && "hidden",
               )}
             />
