@@ -40,7 +40,7 @@ import {
   deleteMessage,
   uploadFile,
 } from "../api";
-import { cn } from "../lib/utils";
+import { cn, formatLastActive } from "../lib/utils";
 import { useTheme } from "../ThemeContext";
 
 function formatBytes(bytes?: number, decimals = 2) {
@@ -705,8 +705,10 @@ export function ChatWindow({
     }
   };
 
-  const formattedLastSeen = (timestamp: number) => {
-    const { formatLastActive } = require("../lib/utils");
+  const formattedLastSeen = (timestamp?: number | null) => {
+    if (!timestamp) return "Last active unknown";
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return "Last active unknown";
     return `Last active ${formatLastActive(timestamp)}`;
   };
 
