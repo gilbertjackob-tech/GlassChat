@@ -17,6 +17,7 @@ import {
   ChevronDown,
   Download,
   Upload,
+  RefreshCw,
 } from "lucide-react";
 import CryptoJS from "crypto-js";
 import { useSocket } from "../SocketContext";
@@ -176,14 +177,32 @@ export function Sidebar({
       setChats((prev) => [newChat, ...prev]);
     });
 
+    const handleUserUpdate = () => {
+      // Re-fetch users and chats
+      if (showAddContact) {
+         import("../api").then((api) => {
+           api.fetchUsers(userSearchQuery).then((users) => {
+             setUsersToChat(users.filter((u) => u.id !== currentUser.id));
+           }).catch(console.error);
+         });
+      }
+      import("../api").then(api => api.fetchChats().then(setChats).catch(console.error));
+    };
+
+    socket.on("user_updated", handleUserUpdate);
+    socket.on("presence_updated", handleUserUpdate);
+
     return () => {
       socket.off("chat_updated");
       socket.off("new_chat");
+      socket.off("user_updated", handleUserUpdate);
+      socket.off("presence_updated", handleUserUpdate);
     };
-  }, [socket]);
+  }, [socket, showAddContact, userSearchQuery, currentUser.id]);
 
   const handleNewChat = () => {
     setShowContacts(true);
+    setShowAddContact(true);
     setShowOptionsPopup(false);
   };
 
@@ -653,7 +672,10 @@ export function Sidebar({
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ avatar: newAvatarUrl })
                     });
-                    if (res.ok) {
+                    if (res.status === 404) {
+                      alert("Your local user no longer exists. Please register again.");
+                      onUpdateUser(null);
+                    } else if (res.ok) {
                       onUpdateUser({
                         ...currentUser,
                         avatar: newAvatarUrl,
@@ -976,12 +998,27 @@ export function Sidebar({
               <h3 className="font-bold text-lg text-slate-800 dark:text-slate-200">
                 New Chat
               </h3>
-              <button
-                onClick={() => setShowAddContact(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => {
+                     import("../api").then((api) => {
+                       api.fetchUsers(userSearchQuery).then((users) => {
+                         setUsersToChat(users.filter((u) => u.id !== currentUser.id));
+                       }).catch(console.error);
+                     });
+                  }}
+                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 dark:text-indigo-400 px-3 py-1.5 rounded-full transition-colors flex items-center"
+                >
+                  <RefreshCw className="w-3 h-3 mr-1" />
+                  Refresh
+                </button>
+                <button
+                  onClick={() => setShowAddContact(false)}
+                  className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             <div className="relative mb-6">
@@ -997,8 +1034,7 @@ export function Sidebar({
 
             {usersToChat.length === 0 ? (
               <div className="text-center text-sm text-slate-500 mt-4">
-                No users found. Open GlassChat on another device and create a
-                username first.
+                No users found in local database. Open GlassChat on another device and register a username first.
               </div>
             ) : (
               <div className="flex flex-col space-y-4">
@@ -1011,6 +1047,7 @@ export function Sidebar({
                     <div className="space-y-1">
                       {usersToChat
                         .filter((u) => u.online)
+                        .sort((a,b) => a.name.localeCompare(b.name))
                         .map((u) => (
                           <div
                             key={u.id}
@@ -1056,6 +1093,7 @@ export function Sidebar({
                     <div className="space-y-1">
                       {usersToChat
                         .filter((u) => !u.online)
+                        .sort((a,b) => a.name.localeCompare(b.name))
                         .map((u) => (
                           <div
                             key={u.id}

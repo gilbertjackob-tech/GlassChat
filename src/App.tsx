@@ -11,6 +11,7 @@ import { AuthScreen } from "./components/AuthScreen";
 import { Chat, User } from "./types";
 import { ThemeProvider } from "./ThemeContext";
 import { cn } from "./lib/utils";
+import { fetchUser } from "./api";
 import {
   Menu,
   ArrowLeft,
@@ -40,6 +41,11 @@ export default function App() {
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem("whatsclone_user_real", JSON.stringify(currentUser));
+      // Validate user
+      fetchUser(currentUser.id).catch(() => {
+        localStorage.removeItem("whatsclone_user_real");
+        setCurrentUser(null);
+      });
     } else {
       localStorage.removeItem("whatsclone_user_real");
     }

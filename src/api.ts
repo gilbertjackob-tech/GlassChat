@@ -28,6 +28,12 @@ export async function fetchUserPresence(userId: string): Promise<{
   return res.json();
 }
 
+export async function fetchUser(userId: string): Promise<User> {
+  const res = await fetch(`${API_BASE}/users/${userId}`);
+  if (!res.ok) throw new Error("Failed to fetch user");
+  return res.json();
+}
+
 export async function fetchUsers(query?: string): Promise<User[]> {
   const url = query
     ? `${API_BASE}/users?q=${encodeURIComponent(query)}`
