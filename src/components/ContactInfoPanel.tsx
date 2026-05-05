@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { Chat, User } from "../types";
 import { cn, formatLastActive } from "../lib/utils";
-import { API_BASE } from "../api";
+import { API_BASE, fetchChatAttachments } from "../api";
 
 interface ContactInfoPanelProps {
   chat: Chat;
@@ -35,8 +35,7 @@ export function ContactInfoPanel({
   }>({ media: [], files: [], links: [] });
 
   useEffect(() => {
-    fetch(`${API_BASE}/chats/${chat.id}/attachments`)
-      .then(res => res.json())
+    fetchChatAttachments(chat.id)
       .then(setAttachments)
       .catch(console.error);
   }, [chat.id]);

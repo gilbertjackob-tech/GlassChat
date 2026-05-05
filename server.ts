@@ -124,11 +124,13 @@ db.exec(`
   );
 `);
 
-try {
-  db.prepare("ALTER TABLE users ADD COLUMN email TEXT").run();
-} catch (e) {
-  // Column might already exist
-}
+try { db.prepare("ALTER TABLE users ADD COLUMN email TEXT").run(); } catch(e){}
+try { db.prepare("ALTER TABLE users ADD COLUMN phone TEXT").run(); } catch(e){}
+try { db.prepare("ALTER TABLE users ADD COLUMN avatar TEXT").run(); } catch(e){}
+try { db.prepare("ALTER TABLE users ADD COLUMN lastActive INTEGER").run(); } catch(e){}
+try { db.prepare("ALTER TABLE users ADD COLUMN lastActivePrivacy TEXT").run(); } catch(e){}
+try { db.prepare("ALTER TABLE messages ADD COLUMN attachmentName TEXT").run(); } catch(e){}
+try { db.prepare("ALTER TABLE messages ADD COLUMN attachmentSize INTEGER").run(); } catch(e){}
 
 // Helper to sanitize filenames
 function sanitizeFilename(name: string) {

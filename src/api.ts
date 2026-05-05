@@ -56,6 +56,12 @@ export async function fetchChats(): Promise<Chat[]> {
   return res.json();
 }
 
+export async function fetchChatAttachments(chatId: string): Promise<{ media: any[]; files: any[]; links: any[] }> {
+  const res = await fetch(`${API_BASE}/chats/${chatId}/attachments`);
+  if (!res.ok) throw new Error("Failed to fetch chat attachments");
+  return res.json();
+}
+
 export async function fetchMessages(chatId: string): Promise<Message[]> {
   const res = await fetch(`${API_BASE}/chats/${chatId}/messages`);
   if (!res.ok) throw new Error("Failed to fetch messages");
