@@ -10,6 +10,8 @@ interface ThemeContextType {
   setEnterIsSend: (val: boolean) => void;
   chatWallpaper: string;
   setChatWallpaper: (val: string) => void;
+  chatWallpaperOpacity: number;
+  setChatWallpaperOpacity: (val: number) => void;
 }
 
 const ThemeContext = createContext<ThemeContextType>({ 
@@ -19,7 +21,9 @@ const ThemeContext = createContext<ThemeContextType>({
   enterIsSend: true,
   setEnterIsSend: () => {},
   chatWallpaper: 'default',
-  setChatWallpaper: () => {}
+  setChatWallpaper: () => {},
+  chatWallpaperOpacity: 100,
+  setChatWallpaperOpacity: () => {}
 });
 
 export const useTheme = () => useContext(ThemeContext);
@@ -35,12 +39,17 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   const [chatWallpaper, setChatWallpaper] = useState<string>(() => {
     return localStorage.getItem('whatsclone_wallpaper') || 'default';
   });
+  const [chatWallpaperOpacity, setChatWallpaperOpacity] = useState<number>(() => {
+    const val = localStorage.getItem('whatsclone_wallpaper_opacity');
+    return val !== null ? parseInt(val, 10) : 100;
+  });
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('whatsclone_theme', theme);
     localStorage.setItem('whatsclone_enter_send', enterIsSend.toString());
     localStorage.setItem('whatsclone_wallpaper', chatWallpaper);
+    localStorage.setItem('whatsclone_wallpaper_opacity', chatWallpaperOpacity.toString());
     const root = window.document.documentElement;
     
     const updateTheme = () => {
@@ -71,7 +80,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
   }, [theme]);
 
   return (
-    <ThemeContext.Provider value={{ theme, setTheme, isDark, enterIsSend, setEnterIsSend, chatWallpaper, setChatWallpaper }}>
+    <ThemeContext.Provider value={{ theme, setTheme, isDark, enterIsSend, setEnterIsSend, chatWallpaper, setChatWallpaper, chatWallpaperOpacity, setChatWallpaperOpacity }}>
       {children}
     </ThemeContext.Provider>
   );

@@ -79,7 +79,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [isSwapped, setIsSwapped] = useState(false);
 
-  const toggleSwap = (e?: React.MouseEvent) => {
+  const toggleSwap = (e?: { stopPropagation: () => void }) => {
     e?.stopPropagation();
     setIsSwapped((prev) => !prev);
   };
@@ -1042,17 +1042,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
 
   const startScreenShare = async () => {
     if (!activeCall?.isVideo) return;
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      setHasError("Screen sharing is not supported on this device/browser.");
-      window.setTimeout(() => setHasError(""), 4000);
-      return;
-    }
-    if (!window.isSecureContext && window.location.hostname !== "localhost") {
-      setHasError("Screen sharing requires HTTPS. Use Tailscale Serve HTTPS URL.");
-      window.setTimeout(() => setHasError(""), 5000);
-      return;
-    }
-
+    
     try {
       const displayStream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
@@ -1520,7 +1510,8 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
               playsInline
               onDoubleClick={toggleFullscreen}
               className={cn(
-                "w-full h-full object-contain cursor-pointer relative z-10",
+                "w-full h-full cursor-pointer relative z-10",
+                isSwapped ? "object-cover" : "object-contain bg-black",
                 (!activeCall.isVideo || !remoteStream?.getVideoTracks()[0]?.enabled) && "hidden",
               )}
             />
@@ -1573,7 +1564,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                 style={{
                   transform: isScreenSharing ? "none" : "scaleX(-1)",
                 }}
-                className={cn("w-full h-full pointer-events-none", isSwapped ? "object-contain" : "object-cover", isVideoOff && !isScreenSharing && "hidden")}
+                className={cn("w-full h-full pointer-events-none", isSwapped ? "object-contain bg-black" : "object-cover bg-slate-900", isVideoOff && !isScreenSharing && "hidden")}
               />
               {isVideoOff && !isScreenSharing && (
                 <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 bg-slate-900 pointer-events-none">

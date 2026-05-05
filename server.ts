@@ -1672,6 +1672,9 @@ async function startServer() {
       "INSERT INTO statuses (id, userId, text, attachmentUrl, attachmentType, backgroundColor, duration, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     ).run(id, userId, text || "", attachmentUrl || "", attachmentType || "", backgroundColor || "#000000", duration || 5000, timestamp);
     
+    const user = db.prepare("SELECT name FROM users WHERE id = ?").get(userId) as any;
+    io.emit("status_added", { userId, id, userName: user?.name || "Someone" });
+
     res.status(201).json({ id, timestamp });
   });
 

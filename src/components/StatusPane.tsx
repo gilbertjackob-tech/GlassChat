@@ -121,11 +121,11 @@ export function StatusPane({ currentUser }: StatusPaneProps) {
     }
     acc[status.userId].statuses.push(status);
     return acc;
-  }, {} as Record<string, {userId: string; userName: string; userAvatar: string; statuses: Status[]}>);
+  }, {} as Record<string, {userId: string; userName: string; userAvatar?: string; statuses: Status[]}>);
 
   const myStatuses = grouped[currentUser.id]?.statuses || [];
   delete grouped[currentUser.id];
-  const otherUsers = Object.values(grouped);
+  const otherUsers = Object.values(grouped) as {userId: string; userName: string; userAvatar?: string; statuses: Status[]}[];
 
   // Simple viewer
   useEffect(() => {

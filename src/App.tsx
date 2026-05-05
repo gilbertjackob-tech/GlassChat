@@ -10,6 +10,7 @@ import { CallOverlay } from "./components/CallOverlay";
 import { AuthScreen } from "./components/AuthScreen";
 import { Chat, User } from "./types";
 import { ThemeProvider } from "./ThemeContext";
+import { NotificationProvider } from "./NotificationContext";
 import { cn } from "./lib/utils";
 import { API_BASE } from "./api";
 import {
@@ -84,6 +85,7 @@ export default function App() {
   return (
     <ThemeProvider>
       <SocketProvider currentUser={currentUser}>
+        <NotificationProvider currentUser={currentUser}>
         {currentUser && !hasRequestedPermissions && (
           <PermissionsModal
             onDone={() => {
@@ -302,6 +304,7 @@ export default function App() {
             )}
           </div>
         </div>
+        </NotificationProvider>
       </SocketProvider>
     </ThemeProvider>
   );

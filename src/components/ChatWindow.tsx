@@ -124,7 +124,7 @@ export function ChatWindow({
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { socket } = useSocket();
-  const { enterIsSend, chatWallpaper } = useTheme();
+  const { enterIsSend, chatWallpaper, chatWallpaperOpacity } = useTheme();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const [otherUserPresence, setOtherUserPresence] = useState<{
@@ -718,17 +718,31 @@ export function ChatWindow({
     return `Last active ${formatLastActive(timestamp)}`;
   };
 
-  const getWallpaperClass = () => {
+  const getWallpaperStyles = () => {
+    let bg = "";
     switch (chatWallpaper) {
-      case "solid-dark":
-        return "bg-slate-900";
-      case "solid-light":
-        return "bg-slate-100";
-      case "emerald":
-        return "bg-emerald-900/20 dark:bg-[#0b141a] bg-opacity-50";
-      default:
-        return "bg-[#EFEAE2] dark:bg-[#0b141a]";
+      case "solid-dark": return { backgroundColor: "#0f172a" };
+      case "solid-light": return { backgroundColor: "#f1f5f9" };
+      case "emerald": return { backgroundColor: "#064e3b" };
+      case "rose": return { backgroundColor: "#881337" };
+      case "ocean": return { backgroundColor: "#0c4a6e" };
+      case "texture-paper": bg = "url('https://images.unsplash.com/photo-1628155930542-3c7a64e2c833?auto=format&fit=crop&w=1000&q=80')"; break;
+      case "texture-wood": bg = "url('https://images.unsplash.com/photo-1550684848-fac1c5b4e853?auto=format&fit=crop&w=1000&q=80')"; break;
+      case "texture-dots": bg = "radial-gradient(#9ca3af 1px, transparent 1px)"; break;
+      case "texture-lines": bg = "repeating-linear-gradient(45deg, #00000010, #00000010 10px, transparent 10px, transparent 20px)"; break;
+      case "img-cute": bg = "url('https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?auto=format&fit=crop&w=1000&q=80')"; break;
+      case "img-romantic": bg = "url('https://images.unsplash.com/photo-1518199266791-5375a83190b7?auto=format&fit=crop&w=1000&q=80')"; break;
+      case "img-professional": bg = "url('https://images.unsplash.com/photo-1557683316-973673baf926?auto=format&fit=crop&w=1000&q=80')"; break;
+      case "img-nature": bg = "url('https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1000&q=80')"; break;
+      case "img-space": bg = "url('https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1000&q=80')"; break;
+      default: return { backgroundColor: "var(--tw-colors-slate-200)", backgroundImage: "url('https://web.whatsapp.com/img/bg-chat-tile-dark_a4be512e7195b6b733d9110b408f075d.png')" }; // Using a default simple background pattern or fallback color
     }
+    
+    return {
+       backgroundImage: bg,
+       backgroundSize: bg.startsWith("url") ? "cover" : bg.includes("radial") ? "20px 20px" : "auto",
+       backgroundPosition: "center",
+    };
   };
 
   return (
@@ -956,12 +970,14 @@ export function ChatWindow({
       )}
 
       {/* Messages */}
-      <section
-        className={cn(
-          "flex-1 overflow-y-auto p-4 md:p-8 space-y-4 relative custom-scrollbar transition-colors duration-300",
-          getWallpaperClass(),
-        )}
-      >
+      <div className="flex-1 relative overflow-hidden flex flex-col bg-[#EFEAE2] dark:bg-[#0b141a]">
+        <div 
+           className="absolute inset-0 z-0 pointer-events-none transition-all duration-300" 
+           style={{ ...getWallpaperStyles(), opacity: (chatWallpaperOpacity ?? 100) / 100 }} 
+        />
+        <section
+          className="flex-1 overflow-y-auto p-4 md:p-8 space-y-4 z-10 relative custom-scrollbar"
+        >
         <div className="flex justify-center">
           <span className="bg-white/80 dark:bg-slate-800/80 px-3 py-1 rounded-md text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-widest shadow-sm">
             Today
@@ -1426,7 +1442,8 @@ export function ChatWindow({
             );
           })}
         <div ref={bottomRef} />
-      </section>
+        </section>
+      </div>
 
       {/* Input Area */}
       <footer className="bg-[#f0f2f5] dark:bg-[#202c33] flex-none z-10 flex flex-col pt-3 pb-3 px-4 transition-colors duration-300">

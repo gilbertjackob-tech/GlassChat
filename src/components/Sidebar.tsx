@@ -33,6 +33,7 @@ import {
 } from "../api";
 import { cn, formatLastActive } from "../lib/utils";
 import { useTheme } from "../ThemeContext";
+import { useNotifications } from "../NotificationContext";
 
 interface SidebarProps {
   activeChatId?: string;
@@ -92,7 +93,11 @@ export function Sidebar({
     setEnterIsSend,
     chatWallpaper,
     setChatWallpaper,
+    chatWallpaperOpacity,
+    setChatWallpaperOpacity
   } = useTheme();
+
+  const { notificationsEnabled, toggleNotifications } = useNotifications();
 
   const [privacy, setPrivacy] = useState<"none" | "contacts" | "everyone">(
     "everyone",
@@ -583,14 +588,6 @@ export function Sidebar({
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <div className="flex items-center gap-2 mt-3 px-1">
-          <span className="px-3 py-1 bg-slate-200 dark:bg-[#202c33] text-slate-700 dark:text-[#00a884] rounded-full text-[13px] font-medium cursor-pointer hover:bg-slate-300 dark:hover:bg-[#374248] transition-colors">
-            All
-          </span>
-          <span className="px-3 py-1 bg-slate-200 dark:bg-[#202c33] text-slate-700 dark:text-[#8696a0] rounded-full text-[13px] font-medium cursor-pointer hover:bg-slate-300 dark:hover:bg-[#374248] transition-colors">
-            Unread 26
-          </span>
-        </div>
       </div>
 
       {/* Chat List */}
@@ -933,18 +930,53 @@ export function Sidebar({
             </div>
 
             {/* Chat Wallpaper Select */}
-            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center text-sm font-medium">
-              <span>Chat Wallpaper</span>
-              <select
-                value={chatWallpaper}
-                onChange={(e) => setChatWallpaper(e.target.value)}
-                className="bg-slate-100 dark:bg-slate-900 border-none rounded px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-[#00a884] text-slate-700 dark:text-slate-300"
-              >
-                <option value="default">Default WhatsApp</option>
-                <option value="solid-dark">Solid Dark</option>
-                <option value="solid-light">Solid Light</option>
-                <option value="emerald">Emerald</option>
-              </select>
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-700 flex flex-col gap-3 text-sm font-medium">
+              <div className="flex justify-between items-center">
+                <span>Chat Wallpaper</span>
+                <select
+                  value={chatWallpaper}
+                  onChange={(e) => setChatWallpaper(e.target.value)}
+                  className="bg-slate-100 dark:bg-slate-900 border-none rounded px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-[#00a884] text-slate-700 dark:text-slate-300"
+                >
+                  <optgroup label="Default">
+                    <option value="default">Default WhatsApp</option>
+                  </optgroup>
+                  <optgroup label="Solid Colors">
+                    <option value="solid-dark">Solid Dark</option>
+                    <option value="solid-light">Solid Light</option>
+                    <option value="emerald">Emerald</option>
+                    <option value="rose">Rose</option>
+                    <option value="ocean">Ocean Blue</option>
+                  </optgroup>
+                  <optgroup label="Textures">
+                    <option value="texture-paper">Crumpled Paper</option>
+                    <option value="texture-wood">Wood Grain</option>
+                    <option value="texture-dots">Polka Dots</option>
+                    <option value="texture-lines">Diagonal Lines</option>
+                  </optgroup>
+                  <optgroup label="Images / Themes">
+                    <option value="img-cute">Cute Cats</option>
+                    <option value="img-romantic">Romantic Hearts</option>
+                    <option value="img-professional">Professional Abstract</option>
+                    <option value="img-nature">Mountain Landscape</option>
+                    <option value="img-space">Deep Space</option>
+                  </optgroup>
+                </select>
+              </div>
+              <div className="flex justify-between items-center mt-2">
+                <span className="text-xs text-slate-500">Wallpaper Opacity</span>
+                <div className="flex items-center gap-2">
+                   <input 
+                     type="range" 
+                     min="10" 
+                     max="100" 
+                     value={chatWallpaperOpacity ?? 100} 
+                     onChange={(e) => setChatWallpaperOpacity && setChatWallpaperOpacity(parseInt(e.target.value, 10))}
+                     className="w-24 accent-[#00a884]"
+                   />
+                   <span className="text-xs w-8 text-right">{chatWallpaperOpacity ?? 100}%</span>
+                </div>
+              </div>
             </div>
 
             {/* Export / Import Data */}
@@ -967,8 +999,21 @@ export function Sidebar({
               </button>
             </div>
 
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer" onClick={() => toggleNotifications(!notificationsEnabled)}>
+              <span>Desktop Notifications</span>
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  checked={notificationsEnabled}
+                  readOnly
+                  className="sr-only"
+                />
+                <div className={cn("block w-10 h-6 rounded-full transition-colors", notificationsEnabled ? "bg-[#00a884]" : "bg-slate-300 dark:bg-slate-600")}></div>
+                <div className={cn("dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform", notificationsEnabled ? "transform translate-x-4" : "")}></div>
+              </div>
+            </div>
+
             {[
-              "Notifications",
               "Privacy",
               "Security",
               "Request Account Info",
