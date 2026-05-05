@@ -142,14 +142,35 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+const connectedSockets = new Map<string, string>();
+
 function loadChats() {
   const chats = db.prepare("SELECT * FROM chats").all() as any[];
+  const allUsers = db.prepare("SELECT id, name, avatar, phone, email, lastActive FROM users").all() as any[];
+  
   for (const chat of chats) {
     chat.isGroup = !!chat.isGroup;
-    chat.members = db
+    
+    // Get member user IDs
+    const memberIds = db
       .prepare("SELECT userId FROM chat_members WHERE chatId = ?")
       .all(chat.id)
       .map((r: any) => r.userId);
+      
+    chat.members = memberIds;
+      
+    // Map to full user objects
+    chat.participants = memberIds.map(uid => {
+      const user = allUsers.find(u => u.id === uid) || { id: uid, name: "Unknown User" };
+      // Omit sensitive data if any
+      delete user.securityAnswer;
+      // Add online status based on connectedSockets
+      return {
+        ...user,
+        online: Array.from(connectedSockets.values()).includes(uid)
+      };
+    });
+
     chat.deletedFor = db
       .prepare("SELECT userId FROM chat_deleted_for WHERE chatId = ?")
       .all(chat.id)
@@ -208,8 +229,6 @@ async function startServer() {
   const io = new SocketIOServer(httpServer, {
     cors: { origin: "*", methods: ["GET", "POST"] },
   });
-
-  const connectedSockets = new Map<string, string>();
 
   io.on("connection", (socket) => {
     socket.on("identify", (userId: string) => {
@@ -491,6 +510,26 @@ async function startServer() {
     });
   });
 
+  app.put("/api/users/:userId/profile", (req, res) => {
+    const { name, avatar } = req.body;
+    const userId = req.params.userId;
+    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+    
+    if (name !== undefined) {
+      db.prepare("UPDATE users SET name = ? WHERE id = ?").run(name, userId);
+      user.name = name;
+    }
+    if (avatar !== undefined) {
+      db.prepare("UPDATE users SET avatar = ? WHERE id = ?").run(avatar, userId);
+      user.avatar = avatar;
+    }
+    res.json(user);
+  });
+
   app.post("/api/users/:userId/privacy", (req, res) => {
     const { lastActivePrivacy } = req.body;
     const userId = req.params.userId;
@@ -653,6 +692,58 @@ async function startServer() {
 
   app.get("/api/chats", (req, res) => {
     res.json(loadChats());
+  });
+
+  app.get("/api/chats/:chatId/attachments", (req, res) => {
+    const chatId = req.params.chatId;
+    const msgs = db.prepare("SELECT * FROM messages WHERE chatId = ? ORDER BY timestamp DESC").all(chatId) as any[];
+
+    const media: any[] = [];
+    const files: any[] = [];
+    const links: any[] = [];
+
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+
+    for (const m of msgs) {
+      if (m.isDeleted) continue;
+
+      if (m.attachmentUrl && m.attachmentType) {
+        const item = {
+          id: m.id,
+          messageId: m.id,
+          fileName: m.attachmentName,
+          mimeType: m.attachmentType,
+          size: m.attachmentSize || 0,
+          url: m.attachmentUrl,
+          senderId: m.senderId,
+          senderName: m.senderName,
+          createdAt: m.timestamp
+        };
+        if (m.attachmentType.startsWith('image/') || m.attachmentType.startsWith('video/')) {
+          media.push(item);
+        } else {
+          files.push(item);
+        }
+      }
+
+      if (m.text) {
+        const urls = m.text.match(urlRegex);
+        if (urls) {
+          for (const url of urls) {
+            links.push({
+              messageId: m.id,
+              url,
+              text: m.text,
+              senderId: m.senderId,
+              senderName: m.senderName,
+              createdAt: m.timestamp
+            });
+          }
+        }
+      }
+    }
+
+    res.json({ media, files, links });
   });
 
   app.get("/api/chats/:chatId/messages", (req, res) => {
@@ -958,6 +1049,23 @@ async function startServer() {
       message.deletedFor.push(userId);
       res.json(message);
     }
+  });
+
+  app.delete("/api/chats/:chatId/clear", (req, res) => {
+    const { chatId } = req.params;
+    const { userId } = req.body;
+    
+    // Find all messages in this chat, and add them to message_deleted_for for this user
+    const msgs = db.prepare("SELECT id FROM messages WHERE chatId = ?").all(chatId) as any[];
+    
+    const insertStmt = db.prepare("INSERT INTO message_deleted_for (messageId, userId) VALUES (?, ?) ON CONFLICT DO NOTHING");
+    db.transaction(() => {
+      for (const m of msgs) {
+        insertStmt.run(m.id, userId);
+      }
+    })();
+    
+    res.json({ success: true, chatId });
   });
 
   app.delete("/api/chats/:chatId", (req, res) => {

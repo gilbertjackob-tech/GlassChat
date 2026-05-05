@@ -28,7 +28,7 @@ import {
   fetchUsers,
   createDirectChat,
 } from "../api";
-import { cn } from "../lib/utils";
+import { cn, formatLastActive } from "../lib/utils";
 import { useTheme } from "../ThemeContext";
 
 interface SidebarProps {
@@ -480,6 +480,23 @@ export function Sidebar({
       <div className="flex-1 overflow-y-auto custom-scrollbar bg-white dark:bg-[#111b21]">
         {filteredChats.map((chat) => {
           const isActive = activeChatId === chat.id;
+          const otherParticipant = !chat.isGroup 
+            ? chat.participants?.find((p) => p.id !== currentUser.id)
+            : null;
+            
+          const chatName = otherParticipant ? otherParticipant.name : chat.name;
+          const chatAvatar = otherParticipant?.avatar || chat.avatar;
+          const isOnline = otherParticipant ? otherParticipant.online : false;
+
+          let subtitle = chat.lastMessage;
+          if (!subtitle) {
+             subtitle = isOnline 
+               ? "Online" 
+               : otherParticipant?.lastActive 
+                 ? `Last active ${formatLastActive(otherParticipant.lastActive)}` 
+                 : "Tap to get started";
+          }
+
           return (
             <div
               key={chat.id}
@@ -491,15 +508,18 @@ export function Sidebar({
                   : "hover:bg-slate-50 dark:hover:bg-[#202c33]",
               )}
             >
-              <div className="w-12 h-12 rounded-full bg-slate-300 dark:bg-[#202c33] flex-shrink-0 flex items-center justify-center text-slate-800 dark:text-[#aebac1] font-bold overflow-hidden text-lg">
-                {chat.avatar ? (
+              <div className="relative w-12 h-12 rounded-full bg-slate-300 dark:bg-[#202c33] flex-shrink-0 flex items-center justify-center text-slate-800 dark:text-[#aebac1] font-bold overflow-visible text-lg">
+                {chatAvatar ? (
                   <img
-                    src={chat.avatar}
+                    src={chatAvatar}
                     alt="Avatar"
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover rounded-full"
                   />
                 ) : (
-                  chat.name.charAt(0).toUpperCase()
+                  chatName.charAt(0).toUpperCase()
+                )}
+                {isOnline && (
+                  <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-white dark:border-[#111b21] rounded-full"></span>
                 )}
               </div>
               <div className="flex-1 min-w-0 border-b border-slate-100 dark:border-[#2f3b43] pb-3 pt-1 relative">
@@ -512,7 +532,7 @@ export function Sidebar({
                         : "text-slate-800 dark:text-[#e9edef]",
                     )}
                   >
-                    {chat.name}
+                    {chatName}
                   </h4>
                   <span
                     className={cn(
@@ -569,7 +589,7 @@ export function Sidebar({
                         : "text-slate-500 dark:text-[#8696a0]",
                     )}
                   >
-                    {chat.lastMessage || "Tap to get started"}
+                    {subtitle}
                   </p>
                   {chat.unreadCount ? (
                     <span className="bg-[#00a884] text-[#111b21] text-[11px] font-bold px-1.5 py-0.5 rounded-full shrink-0 min-w-[20px] text-center">
@@ -619,16 +639,28 @@ export function Sidebar({
                 type="file"
                 className="hidden"
                 accept="image/*"
-                onChange={(e) => {
+                onChange={async (e) => {
                   const file = e.target.files?.[0];
                   if (!file) return;
-                  const reader = new FileReader();
-                  reader.onload = () =>
-                    onUpdateUser({
-                      ...currentUser,
-                      avatar: reader.result as string,
+                  try {
+                    const { uploadFile } = await import("../api");
+                    const data = await uploadFile(file, currentUser.id);
+                    const newAvatarUrl = data.url;
+                    
+                    const res = await fetch(`${window.location.origin}/api/users/${currentUser.id}/profile`, {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ avatar: newAvatarUrl })
                     });
-                  reader.readAsDataURL(file);
+                    if (res.ok) {
+                      onUpdateUser({
+                        ...currentUser,
+                        avatar: newAvatarUrl,
+                      });
+                    }
+                  } catch (err) {
+                    console.error("Failed to upload avatar", err);
+                  }
                 }}
               />
             </label>
@@ -644,6 +676,17 @@ export function Sidebar({
                 onChange={(e) =>
                   onUpdateUser({ ...currentUser, name: e.target.value })
                 }
+                onBlur={async (e) => {
+                   try {
+                     await fetch(`${window.location.origin}/api/users/${currentUser.id}/profile`, {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ name: e.target.value })
+                     });
+                   } catch (err) {
+                     console.error("Failed to update name", err);
+                   }
+                }}
                 className="text-sm font-semibold text-slate-800 dark:text-slate-200 w-full outline-none bg-transparent"
               />
             </div>

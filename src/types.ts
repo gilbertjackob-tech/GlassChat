@@ -8,6 +8,9 @@ export interface User {
   name: string;
   avatar: string;
   phone?: string;
+  email?: string;
+  online?: boolean;
+  lastActive?: number;
   securityQuestion?: string;
   securityAnswer?: string;
 }
@@ -29,6 +32,7 @@ export interface Chat {
   unreadCount?: number;
   isGroup?: boolean;
   members?: string[];
+  participants?: User[];
   deletedFor?: string[];
 }
 

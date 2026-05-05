@@ -1,7 +1,7 @@
 import { Chat, Message, User } from "./types";
 
 // The API url is the same origin since we run Express on port 3000
-const API_BASE = "/api";
+export const API_BASE = "/api";
 
 export async function updateUserPrivacy(
   userId: string,
@@ -228,5 +228,18 @@ export async function deleteChat(
     body: JSON.stringify({ userId }),
   });
   if (!res.ok) throw new Error("Failed to delete chat");
+  return res.json();
+}
+
+export async function clearChat(
+  chatId: string,
+  userId: string,
+): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_BASE}/chats/${chatId}/clear`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId }),
+  });
+  if (!res.ok) throw new Error("Failed to clear chat");
   return res.json();
 }

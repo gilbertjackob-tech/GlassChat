@@ -24,11 +24,13 @@ import {
   Pin,
   MapPin,
   Clock,
+  Download,
 } from "lucide-react";
 import { useSocket } from "../SocketContext";
 import { Chat, Message, User, Contact } from "../types";
 import { LocationShareModal } from "./LocationShareModal";
 import { ForwardModal } from "./ForwardModal";
+import { ContactInfoPanel } from "./ContactInfoPanel";
 import {
   fetchMessages,
   sendMessage,
@@ -79,6 +81,7 @@ export function ChatWindow({
     null,
   );
   const [showSearch, setShowSearch] = useState(false);
+  const [showContactInfo, setShowContactInfo] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
   // Swipe to reply states
@@ -552,7 +555,7 @@ export function ChatWindow({
         detail: {
           chatId: chat.id,
           callerId: currentUser.id,
-          callerName: chat.name,
+          callerName: chatName,
           isVideo,
         },
       }),
@@ -659,47 +662,52 @@ export function ChatWindow({
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
+  const otherParticipant = !chat.isGroup 
+    ? chat.participants?.find((p) => p.id !== currentUser.id)
+    : null;
+
+  const chatName = otherParticipant ? otherParticipant.name : chat.name;
+  const chatAvatar = otherParticipant?.avatar || chat.avatar;
+
   const renderPresence = () => {
     if (typingUsers.length > 0) return null;
     if (chat.isGroup) return null;
-    if (!otherUserPresence) return null;
 
-    if (otherUserPresence.privacy === "none") return null;
+    const onlineStatus = otherUserPresence?.online ?? otherParticipant?.online;
+    const privacy = otherUserPresence?.privacy ?? "everyone";
+    const lastActive = otherUserPresence?.lastActive ?? otherParticipant?.lastActive;
 
-    if (otherUserPresence.privacy === "contacts") {
+    if (privacy === "none") return null;
+
+    if (privacy === "contacts") {
       const savedContacts = localStorage.getItem("whatsclone_contacts");
       const localContacts = savedContacts
         ? (JSON.parse(savedContacts) as Contact[])
         : [];
-      // The other user's name or we check if they are in contacts
       const isContact = localContacts.some(
-        (c: Contact) => c.name === chat.name,
+        (c: Contact) => c.name === chatName,
       );
       if (!isContact) return null;
     }
 
-    if (otherUserPresence.online) {
+    if (onlineStatus) {
       return (
-        <p className="text-[13px] text-slate-500 dark:text-[#aebac1] font-medium truncate">
+        <p className="text-[13px] text-emerald-500 dark:text-[#aebac1] font-medium truncate">
           online
         </p>
       );
-    } else if (otherUserPresence.lastActive) {
+    } else if (lastActive) {
       return (
         <p className="text-[13px] text-slate-500 dark:text-[#aebac1] truncate">
-          {formattedLastSeen(otherUserPresence.lastActive)}
+          {formattedLastSeen(lastActive)}
         </p>
       );
     }
   };
 
   const formattedLastSeen = (timestamp: number) => {
-    const d = new Date(timestamp);
-    const now = new Date();
-    if (d.toDateString() === now.toDateString()) {
-      return `last seen today at ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-    }
-    return `last seen ${d.toLocaleDateString()} at ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    const { formatLastActive } = require("../lib/utils");
+    return `Last active ${formatLastActive(timestamp)}`;
   };
 
   const getWallpaperClass = () => {
@@ -736,6 +744,41 @@ export function ChatWindow({
         />
       )}
 
+      {showContactInfo && (
+        <ContactInfoPanel
+          chat={chat}
+          currentUser={currentUser}
+          onClose={() => setShowContactInfo(false)}
+          onSearch={() => {
+            setShowContactInfo(false);
+            setShowSearch(true);
+          }}
+          onClearChat={async () => {
+             if (window.confirm("Are you sure you want to clear messages in this chat locally?")) {
+                 try {
+                   const { clearChat } = await import("../api");
+                   await clearChat(chat.id, currentUser.id);
+                   setMessages([]);
+                   setShowContactInfo(false);
+                 } catch (err) {
+                   console.error("Failed to clear chat", err);
+                 }
+             }
+          }}
+          onDeleteChat={async () => {
+             if (window.confirm("Are you sure you want to delete this chat locally?")) {
+                 try {
+                   const { deleteChat } = await import("../api");
+                   await deleteChat(chat.id, currentUser.id);
+                   if (onToggleSidebar) onToggleSidebar();
+                 } catch (err) {
+                   console.error("Failed to delete chat", err);
+                 }
+             }
+          }}
+        />
+      )}
+
       {/* Header */}
       <header className="h-16 flex-none bg-white dark:bg-[#202c33] flex items-center px-6 justify-between z-10 relative transition-colors duration-300">
         <div className="flex items-center space-x-4 pl-10 md:pl-0">
@@ -747,21 +790,25 @@ export function ChatWindow({
               <Menu className="w-4 h-4" />
             </button>
           )}
-          <div className="w-10 h-10 rounded-full bg-slate-300 dark:bg-[#111b21] flex items-center justify-center text-slate-700 dark:text-[#aebac1] font-bold overflow-hidden shrink-0 cursor-pointer">
-            {chat.avatar ? (
-              <img
-                src={chat.avatar}
-                alt="Avatar"
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              chat.name.charAt(0).toUpperCase()
-            )}
-          </div>
-          <div className="min-w-0 cursor-pointer">
-            <h3 className="font-medium text-[16px] leading-tight text-slate-800 dark:text-[#e9edef] truncate">
-              {chat.name}
-            </h3>
+          <div 
+            className="flex items-center space-x-4 cursor-pointer"
+            onClick={() => setShowContactInfo(true)}
+          >
+            <div className="w-10 h-10 rounded-full bg-slate-300 dark:bg-[#111b21] flex items-center justify-center text-slate-700 dark:text-[#aebac1] font-bold overflow-hidden shrink-0">
+              {chatAvatar ? (
+                <img
+                  src={chatAvatar}
+                  alt="Avatar"
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                chatName.charAt(0).toUpperCase()
+              )}
+            </div>
+            <div className="min-w-0">
+              <h3 className="font-medium text-[16px] leading-tight text-slate-800 dark:text-[#e9edef] truncate">
+                {chatName}
+              </h3>
             {typingUsers.length > 0 ? (
               <p className="text-[13px] text-[#00a884] font-medium truncate flex items-center">
                 {typingUsers.join(", ")}{" "}
@@ -779,6 +826,7 @@ export function ChatWindow({
             ) : (
               renderPresence()
             )}
+            </div>
           </div>
         </div>
         <div className="flex items-center space-x-4 md:space-x-6 text-slate-500 dark:text-[#aebac1]">
