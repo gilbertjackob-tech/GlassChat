@@ -4,6 +4,7 @@ import {
   MessageSquarePlus,
   MoreVertical,
   Search,
+  User as UserIcon,
   UserCircle2,
   ArrowLeft,
   Camera,
@@ -20,7 +21,13 @@ import {
 import CryptoJS from "crypto-js";
 import { useSocket } from "../SocketContext";
 import { Chat, User, Contact } from "../types";
-import { fetchChats, createChat, fetchStarredMessages } from "../api";
+import {
+  fetchChats,
+  createChat,
+  fetchStarredMessages,
+  fetchUsers,
+  createDirectChat,
+} from "../api";
 import { cn } from "../lib/utils";
 import { useTheme } from "../ThemeContext";
 
@@ -70,6 +77,8 @@ export function Sidebar({
   const [showAddContact, setShowAddContact] = useState(false);
   const [newContactName, setNewContactName] = useState("");
   const [newContactPhone, setNewContactPhone] = useState("");
+  const [usersToChat, setUsersToChat] = useState<User[]>([]);
+  const [userSearchQuery, setUserSearchQuery] = useState("");
 
   const {
     theme,
@@ -200,6 +209,28 @@ export function Sidebar({
       onSelectChat(newChat);
       setShowNewGroup(false);
       setActiveRailTab("chats");
+    }
+  };
+
+  useEffect(() => {
+    if (showAddContact) {
+      fetchUsers(userSearchQuery)
+        .then((users) => {
+          setUsersToChat(users.filter((u) => u.id !== currentUser.id));
+        })
+        .catch(console.error);
+    }
+  }, [showAddContact, userSearchQuery, currentUser.id]);
+
+  const handleStartDirectChat = async (targetUserId: string) => {
+    try {
+      const newChat = await createDirectChat(currentUser.id, targetUserId);
+      onSelectChat(newChat);
+      setShowAddContact(false);
+      setShowContacts(false);
+      setActiveRailTab("chats");
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -813,7 +844,7 @@ export function Sidebar({
               <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center">
                 <UserPlus className="w-5 h-5" />
               </div>
-              <span>New contact</span>
+              <span>New Chat</span>
             </div>
             <div
               className="p-4 border-b border-slate-100 dark:border-slate-800 cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-800 flex items-center space-x-4 text-indigo-600 dark:text-indigo-400 font-bold"
@@ -825,7 +856,7 @@ export function Sidebar({
               <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center">
                 <Users className="w-5 h-5" />
               </div>
-              <span>New group</span>
+              <span>New Group</span>
             </div>
 
             <div className="py-2 px-6 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mt-2">
@@ -882,11 +913,11 @@ export function Sidebar({
             ))}
           </div>
         ) : (
-          /* Add Contact Form */
+          /* New Chat Form */
           <div className="flex-1 overflow-y-auto p-6 flex flex-col bg-slate-50 dark:bg-slate-900">
             <div className="flex items-center justify-between mb-6">
               <h3 className="font-bold text-lg text-slate-800 dark:text-slate-200">
-                Add New Contact
+                New Chat
               </h3>
               <button
                 onClick={() => setShowAddContact(false)}
@@ -895,40 +926,156 @@ export function Sidebar({
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <form onSubmit={handleCreateContact} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase mb-1">
-                  Name
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={newContactName}
-                  onChange={(e) => setNewContactName(e.target.value)}
-                  className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  placeholder="e.g. John Doe"
-                />
+
+            <div className="relative mb-6">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search users by name"
+                value={userSearchQuery}
+                onChange={(e) => setUserSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            {usersToChat.length === 0 ? (
+              <div className="text-center text-sm text-slate-500 mt-4">
+                No users found. Open GlassChat on another device and create a
+                username first.
               </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase mb-1">
-                  Phone / Email
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={newContactPhone}
-                  onChange={(e) => setNewContactPhone(e.target.value)}
-                  className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-2 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  placeholder="e.g. +1 555-0000"
-                />
+            ) : (
+              <div className="flex flex-col space-y-4">
+                {/* Online Users */}
+                {usersToChat.filter((u) => u.online).length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase mb-2">
+                      Online users
+                    </h4>
+                    <div className="space-y-1">
+                      {usersToChat
+                        .filter((u) => u.online)
+                        .map((u) => (
+                          <div
+                            key={u.id}
+                            className="flex items-center space-x-3 p-3 rounded-lg cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-800"
+                            onClick={() => handleStartDirectChat(u.id)}
+                          >
+                            <div className="relative w-10 h-10 rounded-full bg-slate-300 dark:bg-slate-700">
+                              {u.avatar ? (
+                                <img
+                                  src={u.avatar}
+                                  alt="avatar"
+                                  className="w-full h-full rounded-full object-cover"
+                                />
+                              ) : (
+                                <UserIcon className="w-full h-full p-2 text-slate-500" />
+                              )}
+                              <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-slate-50 dark:border-slate-900 rounded-full" />
+                            </div>
+                            <div>
+                              <p className="font-semibold text-slate-800 dark:text-slate-200 text-sm">
+                                {u.name}
+                              </p>
+                              {u.phone && (
+                                <p className="text-xs text-slate-500">
+                                  {u.phone}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Offline Users */}
+                {usersToChat.filter((u) => !u.online).length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-400 uppercase mb-2">
+                      {usersToChat.filter((u) => u.online).length > 0
+                        ? "Offline users"
+                        : "All users"}
+                    </h4>
+                    <div className="space-y-1">
+                      {usersToChat
+                        .filter((u) => !u.online)
+                        .map((u) => (
+                          <div
+                            key={u.id}
+                            className="flex items-center space-x-3 p-3 rounded-lg cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-800"
+                            onClick={() => handleStartDirectChat(u.id)}
+                          >
+                            <div className="w-10 h-10 rounded-full bg-slate-300 dark:bg-slate-700">
+                              {u.avatar ? (
+                                <img
+                                  src={u.avatar}
+                                  alt="avatar"
+                                  className="w-full h-full rounded-full object-cover"
+                                />
+                              ) : (
+                                <UserIcon className="w-full h-full p-2 text-slate-500" />
+                              )}
+                            </div>
+                            <div>
+                              <p className="font-semibold text-slate-800 dark:text-slate-200 text-sm">
+                                {u.name}
+                              </p>
+                              {u.phone ? (
+                                <p className="text-xs text-slate-500">
+                                  {u.phone}
+                                </p>
+                              ) : (
+                                <p className="text-xs text-slate-400 italic">
+                                  Offline
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
               </div>
-              <button
-                type="submit"
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm transition-colors mt-4"
-              >
-                Save Contact
-              </button>
-            </form>
+            )}
+
+            <div className="mt-8 pt-4 border-t border-slate-200 dark:border-slate-700">
+              <h4 className="text-xs font-bold text-slate-400 uppercase mb-4">
+                Manual contact (Fallback)
+              </h4>
+              <form onSubmit={handleCreateContact} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase mb-1">
+                    Name
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    value={newContactName}
+                    onChange={(e) => setNewContactName(e.target.value)}
+                    className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="e.g. John Doe"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase mb-1">
+                    Phone / Email (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={newContactPhone}
+                    onChange={(e) => setNewContactPhone(e.target.value)}
+                    className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="e.g. +1 555-0000"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg shadow-sm transition-colors mt-4 text-sm"
+                >
+                  Save Contact
+                </button>
+              </form>
+            </div>
           </div>
         )}
       </div>

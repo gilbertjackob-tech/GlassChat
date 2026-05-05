@@ -419,6 +419,31 @@ async function startServer() {
     res.json(starredMessages);
   });
 
+  app.get("/api/users", (req, res) => {
+    const q = req.query.q as string;
+    let usersQuery =
+      "SELECT id, name, avatar, phone, lastActive, lastActivePrivacy FROM users";
+    let users;
+    if (q) {
+      users = db
+        .prepare(
+          `${usersQuery} WHERE LOWER(name) LIKE '%' || ? || '%' ORDER BY name ASC`,
+        )
+        .all(q.toLowerCase());
+    } else {
+      users = db.prepare(`${usersQuery} ORDER BY name ASC`).all();
+    }
+
+    // Add online status
+    const result = users.map((u: any) => ({
+      ...u,
+      online: Array.from(connectedSockets.values()).includes(u.id),
+      privacy: u.lastActivePrivacy || "everyone",
+    }));
+
+    res.json(result);
+  });
+
   app.get("/api/users/:userId", (req, res) => {
     const user = db
       .prepare("SELECT * FROM users WHERE id = ?")
@@ -744,6 +769,53 @@ async function startServer() {
     } else {
       res.status(400).json({ error: "Not a live location" });
     }
+  });
+
+  app.post("/api/chats/direct", (req, res) => {
+    const { currentUserId, targetUserId } = req.body;
+    if (!currentUserId || !targetUserId)
+      return res
+        .status(400)
+        .json({ error: "currentUserId and targetUserId required" });
+
+    // Find existing direct chat between these two users
+    const allChats = loadChats();
+    const existingChat = allChats.find(
+      (c) =>
+        !c.isGroup &&
+        c.members?.length === 2 &&
+        c.members.includes(currentUserId) &&
+        c.members.includes(targetUserId),
+    );
+
+    if (existingChat) {
+      return res.json(existingChat);
+    }
+
+    // Get target user to name the chat (chats table has name)
+    const targetUser = db
+      .prepare("SELECT name, avatar FROM users WHERE id = ?")
+      .get(targetUserId) as any;
+    const currentUserInfo = db
+      .prepare("SELECT name, avatar FROM users WHERE id = ?")
+      .get(currentUserId) as any;
+    if (!targetUser || !currentUserInfo)
+      return res.status(404).json({ error: "User not found" });
+
+    const id = "chat_" + Math.random().toString(36).substr(2, 9);
+    db.prepare(
+      "INSERT INTO chats (id, name, lastMessage, lastMessageTime, unreadCount, isGroup) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(id, "Direct Chat", "", Date.now(), 0, 0);
+
+    const insertMember = db.prepare(
+      "INSERT INTO chat_members (chatId, userId) VALUES (?, ?)",
+    );
+    insertMember.run(id, currentUserId);
+    insertMember.run(id, targetUserId);
+
+    const newChat = loadChats().find((c) => c.id === id);
+    io.emit("new_chat", newChat);
+    res.status(201).json(newChat);
   });
 
   app.post("/api/chats", (req, res) => {

@@ -1,4 +1,4 @@
-import { Chat, Message } from "./types";
+import { Chat, Message, User } from "./types";
 
 // The API url is the same origin since we run Express on port 3000
 const API_BASE = "/api";
@@ -25,6 +25,28 @@ export async function fetchUserPresence(userId: string): Promise<{
 }> {
   const res = await fetch(`${API_BASE}/users/${userId}`);
   if (!res.ok) throw new Error("Failed to fetch user presence");
+  return res.json();
+}
+
+export async function fetchUsers(query?: string): Promise<User[]> {
+  const url = query
+    ? `${API_BASE}/users?q=${encodeURIComponent(query)}`
+    : `${API_BASE}/users`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Failed to fetch users");
+  return res.json();
+}
+
+export async function createDirectChat(
+  currentUserId: string,
+  targetUserId: string,
+): Promise<Chat> {
+  const res = await fetch(`${API_BASE}/chats/direct`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currentUserId, targetUserId }),
+  });
+  if (!res.ok) throw new Error("Failed to create direct chat");
   return res.json();
 }
 
