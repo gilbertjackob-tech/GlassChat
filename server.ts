@@ -407,6 +407,19 @@ async function startServer() {
       });
     };
 
+    const emitCallHistoryUpdated = (call: any, status: string) => {
+      if (!call?.callerId || !call?.calleeId) return;
+      const payload = {
+        callId: call.id,
+        chatId: call.chatId,
+        callerId: call.callerId,
+        calleeId: call.calleeId,
+        status,
+      };
+      io.in(call.callerId).emit("call:history-updated", payload);
+      io.in(call.calleeId).emit("call:history-updated", payload);
+    };
+
     const routeValidatedSignal = (event: string, data: any) => {
       const validation = validateCallSignal(data);
       if (!validation.ok) {
@@ -448,6 +461,7 @@ async function startServer() {
           ...data,
           reason: "unavailable",
         });
+        emitCallHistoryUpdated(validation.call, "unavailable");
         return;
       }
 
@@ -461,6 +475,15 @@ async function startServer() {
     socket.on("call:answer", (data) => routeValidatedSignal("call:answer", data));
     socket.on("call:ice-candidate", (data) =>
       routeValidatedSignal("call:ice-candidate", data),
+    );
+    socket.on("call:screen-share-started", (data) =>
+      routeValidatedSignal("call:screen-share-started", data),
+    );
+    socket.on("call:screen-share-stopped", (data) =>
+      routeValidatedSignal("call:screen-share-stopped", data),
+    );
+    socket.on("call:media-state", (data) =>
+      routeValidatedSignal("call:media-state", data),
     );
 
     socket.on("call:ringing", (data) => {
@@ -533,6 +556,7 @@ async function startServer() {
         fromUserId: validation.call.calleeId,
         toUserId: validation.call.callerId,
       });
+      emitCallHistoryUpdated(validation.call, "busy");
     });
 
     socket.on("call:missed", (data) => {
@@ -572,6 +596,7 @@ async function startServer() {
       };
       io.in(validation.call.callerId).emit("call:missed", payload);
       io.in(validation.call.calleeId).emit("call:missed", payload);
+      emitCallHistoryUpdated(validation.call, "missed");
     });
 
     socket.on("call:unavailable", (data) => {
@@ -588,6 +613,7 @@ async function startServer() {
         ...data,
         reason: "unavailable",
       });
+      emitCallHistoryUpdated(validation.call, "unavailable");
     });
 
     socket.on("call:declined", (data) => {
@@ -604,6 +630,7 @@ async function startServer() {
         ...data,
         reason: "declined",
       });
+      emitCallHistoryUpdated(validation.call, "declined");
     });
 
     socket.on("call:reject", (data) => {
@@ -625,6 +652,7 @@ async function startServer() {
         ...normalized,
         reason: "declined",
       });
+      emitCallHistoryUpdated(validation.call, "declined");
     });
 
     socket.on("call:end", (data) => {
@@ -649,6 +677,7 @@ async function startServer() {
       db.prepare(
         "UPDATE call_logs SET status = ?, endedAt = ?, durationSeconds = COALESCE(?, durationSeconds), endReason = ? WHERE id = ?",
       ).run(status, now, durationSeconds, reason, data.callId);
+      emitCallHistoryUpdated(call, status);
     });
 
     socket.on("call:failed", (data) => {
@@ -662,6 +691,7 @@ async function startServer() {
         "UPDATE call_logs SET status = ?, endedAt = ?, endReason = ? WHERE id = ?",
       ).run("failed", now, data.reason || "failed", data.callId);
       io.in(data.toUserId).emit("call:failed", data);
+      emitCallHistoryUpdated(validation.call, "failed");
     });
 
     socket.on(

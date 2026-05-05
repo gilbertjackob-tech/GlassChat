@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Phone,
-  PhoneOff,
-  Video as VideoIcon,
+  Camera,
+  Maximize2,
   Mic,
   MicOff,
+  Minimize2,
+  MonitorOff,
+  MonitorUp,
+  Phone,
+  PhoneOff,
+  RotateCcw,
+  Video as VideoIcon,
   VideoOff,
 } from "lucide-react";
 import { useSocket } from "../SocketContext";
@@ -32,6 +38,9 @@ type SignalPayload = {
   answer?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
   reason?: string;
+  audioMuted?: boolean;
+  videoOff?: boolean;
+  screenSharing?: boolean;
 };
 
 interface CallOverlayProps {
@@ -45,14 +54,23 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   const [callStatus, setCallStatus] = useState<CallStatus>("idle");
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [remoteScreenSharing, setRemoteScreenSharing] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [hasError, setHasError] = useState("");
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
+  const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>("");
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const cameraVideoTrackRef = useRef<MediaStreamTrack | null>(null);
   const pendingOffersRef = useRef<Map<string, SignalPayload>>(new Map());
   const peerUserIdRef = useRef<string | null>(null);
   const connectedAtRef = useRef<number | null>(null);
@@ -60,9 +78,12 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   const incomingCallRef = useRef<CallData | null>(null);
   const callStatusRef = useRef<CallStatus>("idle");
   const timeoutRefs = useRef<number[]>([]);
+  const reconnectTimeoutRef = useRef<number | null>(null);
 
+  const containerRef = useRef<HTMLDivElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const minimizedRemoteVideoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     activeCallRef.current = activeCall;
@@ -76,9 +97,21 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     callStatusRef.current = callStatus;
   }, [callStatus]);
 
+  useEffect(() => {
+    screenStreamRef.current = screenStream;
+  }, [screenStream]);
+
   const clearTimers = () => {
     timeoutRefs.current.forEach((id) => window.clearTimeout(id));
     timeoutRefs.current = [];
+    if (reconnectTimeoutRef.current) {
+      window.clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+  };
+
+  const stopTracks = (stream: MediaStream | null) => {
+    stream?.getTracks().forEach((track) => track.stop());
   };
 
   const resetState = () => {
@@ -87,13 +120,15 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       pcRef.current.close();
       pcRef.current = null;
     }
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = null;
-    }
+    stopTracks(screenStreamRef.current);
+    stopTracks(localStreamRef.current);
+    localStreamRef.current = null;
     remoteStreamRef.current = null;
+    screenStreamRef.current = null;
+    cameraVideoTrackRef.current = null;
     setLocalStream(null);
     setRemoteStream(null);
+    setScreenStream(null);
     peerUserIdRef.current = null;
     connectedAtRef.current = null;
     setIncomingCall(null);
@@ -102,6 +137,9 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     setCallStatus("idle");
     setIsMuted(false);
     setIsVideoOff(false);
+    setIsMinimized(false);
+    setIsScreenSharing(false);
+    setRemoteScreenSharing(false);
   };
 
   const finishAfterStatus = (status: CallStatus, message?: string) => {
@@ -149,11 +187,44 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     };
   };
 
+  const emitForActiveCall = (event: string, extra: Partial<SignalPayload> = {}) => {
+    const call = activeCallRef.current;
+    if (!call) return;
+    const signal = buildSignal(call);
+    if (signal) emitSignal(event, { ...signal, ...extra });
+  };
+
+  const emitMediaState = (
+    audioMuted = isMuted,
+    videoOff = isVideoOff,
+    screenSharing = isScreenSharing,
+  ) => {
+    emitForActiveCall("call:media-state", {
+      audioMuted,
+      videoOff,
+      screenSharing,
+    });
+  };
+
   const getIncomingOffer = (call: CallData) => {
     const offerData = pendingOffersRef.current.get(call.callId);
     const offer = call.offer || offerData?.offer;
     const fromUserId = offerData?.fromUserId || call.callerId;
     return offer && fromUserId ? { offer, fromUserId } : null;
+  };
+
+  const refreshVideoInputs = async () => {
+    try {
+      if (!navigator.mediaDevices?.enumerateDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cameras = devices.filter((device) => device.kind === "videoinput");
+      setVideoInputs(cameras);
+      if (!selectedVideoDeviceId && cameras[0]?.deviceId) {
+        setSelectedVideoDeviceId(cameras[0].deviceId);
+      }
+    } catch (err) {
+      console.error("Could not enumerate cameras", err);
+    }
   };
 
   const attachPeerHandlers = (pc: RTCPeerConnection, call: CallData) => {
@@ -162,6 +233,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       remoteStreamRef.current = stream;
       setRemoteStream(stream);
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+      if (minimizedRemoteVideoRef.current) minimizedRemoteVideoRef.current.srcObject = stream;
     };
 
     pc.onicecandidate = (event) => {
@@ -180,6 +252,8 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         setCallStatus("connected");
         const signal = buildSignal(call);
         if (signal) emitSignal("call:connected", signal);
+      } else if (pc.connectionState === "disconnected") {
+        setCallStatus("reconnecting");
       } else if (pc.connectionState === "failed") {
         const signal = buildSignal(call);
         if (signal) emitSignal("call:failed", { ...signal, reason: "network_lost" });
@@ -330,6 +404,45 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       finishAfterStatus(finalStatus, message);
     };
 
+    const handleRemoteScreenStarted = (data: SignalPayload) => {
+      if (!isCurrentCallEvent(data) || data.toUserId !== currentUser.id) return;
+      setRemoteScreenSharing(true);
+    };
+
+    const handleRemoteScreenStopped = (data: SignalPayload) => {
+      if (!isCurrentCallEvent(data) || data.toUserId !== currentUser.id) return;
+      setRemoteScreenSharing(false);
+    };
+
+    const handleMediaState = (data: SignalPayload) => {
+      if (!isCurrentCallEvent(data) || data.toUserId !== currentUser.id) return;
+      if (typeof data.screenSharing === "boolean") {
+        setRemoteScreenSharing(data.screenSharing);
+      }
+    };
+
+    const handleDisconnect = () => {
+      if (!activeCallRef.current) return;
+      setCallStatus("reconnecting");
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        const call = activeCallRef.current;
+        if (!call) return;
+        const signal = buildSignal(call);
+        if (signal) emitSignal("call:end", { ...signal, reason: "network_lost" });
+        finishAfterStatus("failed", "Connection lost");
+      }, 10000);
+    };
+
+    const handleReconnect = () => {
+      if (reconnectTimeoutRef.current) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      if (activeCallRef.current && callStatusRef.current === "reconnecting") {
+        setCallStatus(connectedAtRef.current ? "connected" : "connecting");
+      }
+    };
+
     const startOutgoingCall = async (e: Event) => {
       const { chatId, calleeId, calleeName, calleeAvatar, isVideo } = (
         e as CustomEvent<StartCallDetail>
@@ -365,6 +478,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         const call: CallData = { ...baseCall, callId, status: "outgoing_calling" };
         peerUserIdRef.current = calleeId;
         setActiveCall(call);
+        setIsMinimized(false);
         setCallStatus("outgoing_calling");
 
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -372,8 +486,10 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
           video: isVideo,
         });
         localStreamRef.current = stream;
+        cameraVideoTrackRef.current = stream.getVideoTracks()[0] || null;
         setLocalStream(stream);
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+        void refreshVideoInputs();
 
         const pc = new RTCPeerConnection(ICE_SERVERS);
         pcRef.current = pc;
@@ -409,6 +525,11 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     socket.on("call:ringing", handleRinging);
     socket.on("call:accepted", handleAccepted);
     socket.on("call:connected", handleConnected);
+    socket.on("call:screen-share-started", handleRemoteScreenStarted);
+    socket.on("call:screen-share-stopped", handleRemoteScreenStopped);
+    socket.on("call:media-state", handleMediaState);
+    socket.on("disconnect", handleDisconnect);
+    socket.on("connect", handleReconnect);
     socket.on("call:busy", (data) => endFromRemote("busy", "User busy", data));
     socket.on("call:missed", (data) => endFromRemote("missed", "No answer", data));
     socket.on("call:unavailable", (data) =>
@@ -429,6 +550,11 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       socket.off("call:ringing", handleRinging);
       socket.off("call:accepted", handleAccepted);
       socket.off("call:connected", handleConnected);
+      socket.off("call:screen-share-started", handleRemoteScreenStarted);
+      socket.off("call:screen-share-stopped", handleRemoteScreenStopped);
+      socket.off("call:media-state", handleMediaState);
+      socket.off("disconnect", handleDisconnect);
+      socket.off("connect", handleReconnect);
       socket.off("call:busy");
       socket.off("call:missed");
       socket.off("call:unavailable");
@@ -455,7 +581,35 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
     }
-  }, [activeCall, isVideoOff, localStream, remoteStream]);
+    if (minimizedRemoteVideoRef.current && remoteStream) {
+      minimizedRemoteVideoRef.current.srcObject = remoteStream;
+    }
+  }, [activeCall, isMinimized, isVideoOff, localStream, remoteStream]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const call = activeCallRef.current;
+      if (!call) return;
+      const signal = buildSignal(call);
+      if (signal) {
+        socket?.emit("call:end", {
+          ...signal,
+          reason: connectedAtRef.current ? "network_lost" : "ended_by_caller",
+        });
+      }
+      stopTracks(screenStreamRef.current);
+      stopTracks(localStreamRef.current);
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [socket, currentUser.id]);
 
   const acceptCall = async () => {
     if (!socket || !incomingCall) return;
@@ -482,6 +636,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     peerUserIdRef.current = offerData.fromUserId;
     setActiveCall(incomingCall);
     setIncomingCall(null);
+    setIsMinimized(false);
     setCallStatus("connecting");
 
     try {
@@ -497,8 +652,10 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         video: incomingCall.isVideo,
       });
       localStreamRef.current = stream;
+      cameraVideoTrackRef.current = stream.getVideoTracks()[0] || null;
       setLocalStream(stream);
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      void refreshVideoInputs();
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
       pcRef.current = pc;
@@ -558,15 +715,152 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     const audioTrack = localStreamRef.current?.getAudioTracks()[0];
     if (audioTrack) {
       audioTrack.enabled = !audioTrack.enabled;
-      setIsMuted(!audioTrack.enabled);
+      const nextMuted = !audioTrack.enabled;
+      setIsMuted(nextMuted);
+      emitMediaState(nextMuted, isVideoOff, isScreenSharing);
     }
   };
 
   const toggleVideo = () => {
-    const videoTrack = localStreamRef.current?.getVideoTracks()[0];
+    const videoTrack = cameraVideoTrackRef.current || localStreamRef.current?.getVideoTracks()[0];
     if (videoTrack) {
       videoTrack.enabled = !videoTrack.enabled;
-      setIsVideoOff(!videoTrack.enabled);
+      const nextVideoOff = !videoTrack.enabled;
+      setIsVideoOff(nextVideoOff);
+      emitMediaState(isMuted, nextVideoOff, isScreenSharing);
+    }
+  };
+
+  const findVideoSender = () =>
+    pcRef.current?.getSenders().find((sender) => sender.track?.kind === "video");
+
+  const startScreenShare = async () => {
+    if (!activeCall?.isVideo) return;
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setHasError("Screen sharing is not supported on this device/browser.");
+      window.setTimeout(() => setHasError(""), 4000);
+      return;
+    }
+    if (!window.isSecureContext && window.location.hostname !== "localhost") {
+      setHasError("Screen sharing requires HTTPS. Use Tailscale Serve HTTPS URL.");
+      window.setTimeout(() => setHasError(""), 5000);
+      return;
+    }
+
+    try {
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true,
+      });
+      const screenVideoTrack = displayStream.getVideoTracks()[0];
+      if (!screenVideoTrack) {
+        stopTracks(displayStream);
+        setHasError("No screen video track was selected.");
+        window.setTimeout(() => setHasError(""), 3500);
+        return;
+      }
+
+      cameraVideoTrackRef.current =
+        cameraVideoTrackRef.current || localStreamRef.current?.getVideoTracks()[0] || null;
+
+      const sender = findVideoSender();
+      if (sender) {
+        await sender.replaceTrack(screenVideoTrack);
+      } else if (pcRef.current) {
+        pcRef.current.addTrack(screenVideoTrack, displayStream);
+      }
+
+      stopTracks(screenStreamRef.current);
+      screenStreamRef.current = displayStream;
+      setScreenStream(displayStream);
+      setLocalStream(displayStream);
+      setIsScreenSharing(true);
+      emitForActiveCall("call:screen-share-started");
+      emitMediaState(isMuted, isVideoOff, true);
+      screenVideoTrack.onended = () => {
+        void stopScreenShare();
+      };
+    } catch (err) {
+      console.error("Screen share failed", err);
+      setHasError("Could not start screen sharing.");
+      window.setTimeout(() => setHasError(""), 3500);
+    }
+  };
+
+  const stopScreenShare = async () => {
+    const call = activeCallRef.current;
+    if (!call || !screenStreamRef.current) return;
+    try {
+      const cameraTrack = cameraVideoTrackRef.current;
+      const sender = findVideoSender();
+      if (sender && cameraTrack && !isVideoOff) {
+        await sender.replaceTrack(cameraTrack);
+      } else if (sender && isVideoOff) {
+        await sender.replaceTrack(null);
+      }
+    } catch (err) {
+      console.error("Could not restore camera after screen share", err);
+    } finally {
+      stopTracks(screenStreamRef.current);
+      screenStreamRef.current = null;
+      setScreenStream(null);
+      setLocalStream(localStreamRef.current);
+      setIsScreenSharing(false);
+      emitForActiveCall("call:screen-share-stopped");
+      emitMediaState(isMuted, isVideoOff, false);
+    }
+  };
+
+  const switchCamera = async () => {
+    if (!activeCall?.isVideo || videoInputs.length < 2) return;
+    const currentIndex = Math.max(
+      0,
+      videoInputs.findIndex((device) => device.deviceId === selectedVideoDeviceId),
+    );
+    const nextDevice = videoInputs[(currentIndex + 1) % videoInputs.length];
+    if (!nextDevice) return;
+
+    try {
+      const nextStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: nextDevice.deviceId } },
+        audio: false,
+      });
+      const nextTrack = nextStream.getVideoTracks()[0];
+      if (!nextTrack) {
+        stopTracks(nextStream);
+        return;
+      }
+
+      const oldVideoTrack = cameraVideoTrackRef.current || localStreamRef.current?.getVideoTracks()[0];
+      cameraVideoTrackRef.current = nextTrack;
+      setSelectedVideoDeviceId(nextDevice.deviceId);
+
+      if (!isScreenSharing) {
+        const sender = findVideoSender();
+        if (sender) await sender.replaceTrack(nextTrack);
+      }
+
+      const audioTracks = localStreamRef.current?.getAudioTracks() || [];
+      const combinedStream = new MediaStream([...audioTracks, nextTrack]);
+      localStreamRef.current = combinedStream;
+      if (!isScreenSharing) setLocalStream(combinedStream);
+      oldVideoTrack?.stop();
+    } catch (err) {
+      console.error("Could not switch camera", err);
+      setHasError("Could not switch camera.");
+      window.setTimeout(() => setHasError(""), 3000);
+    }
+  };
+
+  const toggleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await containerRef.current?.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      console.error("Fullscreen failed", err);
     }
   };
 
@@ -591,24 +885,118 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
           ? "Connecting..."
           : callStatus === "connected"
             ? formatDuration(callDuration)
-            : callStatus === "busy"
-              ? "User busy"
-              : callStatus === "missed"
-                ? "No answer"
-                : callStatus === "declined"
-                  ? "Call declined"
-                  : callStatus === "unavailable"
-                    ? "User unavailable"
-                    : callStatus === "failed"
-                      ? "Call failed"
-                      : callStatus === "cancelled"
-                        ? "Call cancelled"
-                      : "";
+            : callStatus === "reconnecting"
+              ? "Reconnecting..."
+              : callStatus === "busy"
+                ? "User busy"
+                : callStatus === "missed"
+                  ? "No answer"
+                  : callStatus === "declined"
+                    ? "Call declined"
+                    : callStatus === "unavailable"
+                      ? "User unavailable"
+                      : callStatus === "failed"
+                        ? "Call failed"
+                        : callStatus === "cancelled"
+                          ? "Call cancelled"
+                        : "";
+
+  const renderAvatar = (sizeClass: string) => (
+    <div className={cn("rounded-full bg-slate-800 flex items-center justify-center overflow-hidden", sizeClass)}>
+      {otherAvatar ? (
+        <img src={otherAvatar} alt={otherName} className="w-full h-full object-cover" />
+      ) : (
+        <span className="text-white font-bold">{otherName.charAt(0).toUpperCase()}</span>
+      )}
+    </div>
+  );
 
   if (!incomingCall && !activeCall && !hasError) return null;
 
+  if (activeCall && isMinimized) {
+    const showMiniVideo = activeCall.isVideo && remoteStream?.getVideoTracks()[0]?.enabled;
+    return (
+      <>
+        {hasError && (
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 w-11/12 max-w-md bg-amber-100 border border-amber-300 text-amber-900 px-4 py-3 rounded-lg shadow-2xl z-50">
+            <p className="font-bold text-sm">Call status</p>
+            <p className="text-xs mt-1">{hasError}</p>
+          </div>
+        )}
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setIsMinimized(false)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") setIsMinimized(false);
+          }}
+          className={cn(
+            "fixed z-40 bg-slate-950/95 text-white shadow-2xl border border-slate-700 backdrop-blur-md cursor-pointer",
+            activeCall.isVideo
+              ? "bottom-20 right-3 w-48 h-32 sm:bottom-4 sm:right-4 sm:w-64 sm:h-40 rounded-xl overflow-hidden"
+              : "bottom-20 right-3 left-3 sm:left-auto sm:bottom-4 sm:right-4 sm:w-80 rounded-full px-3 py-3",
+          )}
+        >
+          {activeCall.isVideo ? (
+            <>
+              {showMiniVideo ? (
+                <video
+                  ref={minimizedRemoteVideoRef}
+                  autoPlay
+                  playsInline
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center bg-slate-900">
+                  {renderAvatar("w-16 h-16 text-2xl")}
+                </div>
+              )}
+              <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">{otherName}</p>
+                    <p className="text-xs text-emerald-300 font-mono">{statusLabel}</p>
+                  </div>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      endActiveCall();
+                    }}
+                    className="w-9 h-9 rounded-full bg-red-500 flex items-center justify-center shrink-0"
+                    title="End call"
+                  >
+                    <PhoneOff className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center gap-3">
+              {renderAvatar("w-11 h-11 text-lg shrink-0")}
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">{otherName}</p>
+                <p className="text-xs text-emerald-300 font-mono">{statusLabel}</p>
+              </div>
+              {isMuted && <MicOff className="w-4 h-4 text-amber-300 shrink-0" />}
+              <button
+                onClick={(event) => {
+                  event.stopPropagation();
+                  endActiveCall();
+                }}
+                className="w-10 h-10 rounded-full bg-red-500 flex items-center justify-center shrink-0"
+                title="End call"
+              >
+                <PhoneOff className="w-5 h-5" />
+              </button>
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+
   return (
-    <div className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center backdrop-blur-sm p-4">
       {hasError && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 w-11/12 max-w-md bg-amber-100 border border-amber-300 text-amber-900 px-4 py-3 rounded-lg shadow-2xl z-50 animate-in slide-in-from-top-4">
           <p className="font-bold text-sm">Call status</p>
@@ -656,7 +1044,27 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       )}
 
       {activeCall && (
-        <div className="w-full h-full md:w-[60%] md:h-[80%] md:rounded-2xl bg-black flex flex-col items-center shadow-2xl border border-slate-700 relative overflow-hidden animate-in fade-in zoom-in duration-300">
+        <div
+          ref={containerRef}
+          className="w-full h-full md:w-[70%] md:h-[86%] md:rounded-2xl bg-black flex flex-col items-center shadow-2xl border border-slate-700 relative overflow-hidden animate-in fade-in zoom-in duration-300"
+        >
+          <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
+            <button
+              onClick={() => setIsMinimized(true)}
+              className="w-11 h-11 rounded-full bg-slate-900/80 border border-slate-700 text-white flex items-center justify-center hover:bg-slate-800"
+              title="Minimize call"
+            >
+              <Minimize2 className="w-5 h-5" />
+            </button>
+            <button
+              onClick={toggleFullscreen}
+              className="w-11 h-11 rounded-full bg-slate-900/80 border border-slate-700 text-white flex items-center justify-center hover:bg-slate-800"
+              title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            >
+              <Maximize2 className="w-5 h-5" />
+            </button>
+          </div>
+
           <div className="flex-1 w-full flex items-center justify-center bg-slate-900 relative">
             <video
               ref={remoteVideoRef}
@@ -667,8 +1075,18 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                 (!activeCall.isVideo || !remoteStream?.getVideoTracks()[0]?.enabled) && "hidden",
               )}
             />
+            {remoteScreenSharing && (
+              <div className="absolute top-4 right-4 z-20 rounded-full bg-emerald-500/90 px-3 py-1 text-xs font-semibold text-white shadow-lg">
+                {otherName} is sharing screen
+              </div>
+            )}
+            {isScreenSharing && (
+              <div className="absolute top-16 right-4 z-20 rounded-full bg-sky-500/90 px-3 py-1 text-xs font-semibold text-white shadow-lg">
+                You are sharing screen
+              </div>
+            )}
             {(!activeCall.isVideo || !remoteStream?.getVideoTracks()[0]?.enabled) && (
-              <div className="flex flex-col items-center">
+              <div className="flex flex-col items-center px-6 text-center">
                 <div className="w-32 h-32 rounded-full bg-slate-800 border-4 border-slate-700 flex items-center justify-center text-5xl mb-6 text-white shadow-2xl relative overflow-hidden">
                   <div className="absolute inset-0 rounded-full bg-indigo-500/20 blur-xl animate-pulse" />
                   {otherAvatar ? (
@@ -690,9 +1108,9 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                 autoPlay
                 playsInline
                 muted
-                className={cn("w-full h-full object-cover", isVideoOff && "hidden")}
+                className={cn("w-full h-full object-cover", isVideoOff && !isScreenSharing && "hidden")}
               />
-              {isVideoOff && (
+              {isVideoOff && !isScreenSharing && (
                 <div className="w-full h-full flex items-center justify-center text-slate-500 bg-slate-900">
                   <VideoOff className="w-8 h-8 opacity-50" />
                 </div>
@@ -700,7 +1118,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
             </div>
           )}
 
-          <div className="absolute bottom-0 inset-x-0 p-6 flex justify-center space-x-4 sm:space-x-8 bg-gradient-to-t from-slate-900 via-slate-900/80 to-transparent">
+          <div className="absolute bottom-0 inset-x-0 p-4 sm:p-6 flex flex-wrap justify-center gap-3 sm:gap-5 bg-gradient-to-t from-slate-900 via-slate-900/80 to-transparent">
             <button
               onClick={toggleMute}
               className={cn(
@@ -709,15 +1127,11 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                   ? "bg-slate-200 text-slate-900"
                   : "bg-slate-800 hover:bg-slate-700 backdrop-blur-md border border-slate-700",
               )}
+              title={isMuted ? "Unmute" : "Mute"}
             >
               {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
             </button>
-            <button
-              onClick={endActiveCall}
-              className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center text-white hover:bg-red-600 hover:scale-105 transition-all shadow-lg hover:shadow-red-500/50"
-            >
-              <PhoneOff className="w-7 h-7" />
-            </button>
+
             {activeCall.isVideo && (
               <button
                 onClick={toggleVideo}
@@ -727,8 +1141,55 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                     ? "bg-slate-200 text-slate-900"
                     : "bg-slate-800 hover:bg-slate-700 backdrop-blur-md border border-slate-700",
                 )}
+                title={isVideoOff ? "Turn camera on" : "Turn camera off"}
               >
                 {isVideoOff ? <VideoOff className="w-6 h-6" /> : <VideoIcon className="w-6 h-6" />}
+              </button>
+            )}
+
+            {activeCall.isVideo && (
+              <button
+                onClick={() => {
+                  if (isScreenSharing) void stopScreenShare();
+                  else void startScreenShare();
+                }}
+                className={cn(
+                  "w-14 h-14 rounded-full flex items-center justify-center text-white transition-all shadow-lg",
+                  isScreenSharing
+                    ? "bg-sky-500 hover:bg-sky-600"
+                    : "bg-slate-800 hover:bg-slate-700 backdrop-blur-md border border-slate-700",
+                )}
+                title={isScreenSharing ? "Stop screen share" : "Share screen"}
+              >
+                {isScreenSharing ? <MonitorOff className="w-6 h-6" /> : <MonitorUp className="w-6 h-6" />}
+              </button>
+            )}
+
+            {activeCall.isVideo && videoInputs.length > 1 && (
+              <button
+                onClick={() => void switchCamera()}
+                className="w-14 h-14 rounded-full flex items-center justify-center text-white transition-all shadow-lg bg-slate-800 hover:bg-slate-700 backdrop-blur-md border border-slate-700"
+                title="Switch camera"
+              >
+                <RotateCcw className="w-6 h-6" />
+              </button>
+            )}
+
+            <button
+              onClick={endActiveCall}
+              className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center text-white hover:bg-red-600 hover:scale-105 transition-all shadow-lg hover:shadow-red-500/50"
+              title="End call"
+            >
+              <PhoneOff className="w-7 h-7" />
+            </button>
+
+            {activeCall.isVideo && !videoInputs.length && (
+              <button
+                onClick={() => void refreshVideoInputs()}
+                className="w-14 h-14 rounded-full flex items-center justify-center text-white transition-all shadow-lg bg-slate-800 hover:bg-slate-700 backdrop-blur-md border border-slate-700"
+                title="Detect cameras"
+              >
+                <Camera className="w-6 h-6" />
               </button>
             )}
           </div>

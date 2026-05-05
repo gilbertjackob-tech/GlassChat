@@ -18,6 +18,7 @@ import {
   Download,
   Upload,
   RefreshCw,
+  Video as VideoIcon,
 } from "lucide-react";
 import CryptoJS from "crypto-js";
 import { useSocket } from "../SocketContext";
@@ -404,26 +405,96 @@ export function Sidebar({
 
   // Calls pane state
   const [callLogs, setCallLogs] = useState<CallHistoryItem[]>([]);
+  const [selectedCallLog, setSelectedCallLog] = useState<CallHistoryItem | null>(null);
+  const refreshCallLogs = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    try {
+      const res = await fetch(`${API_BASE}/calls?userId=${encodeURIComponent(currentUser.id)}`);
+      if (!res.ok) {
+        throw new Error(`Failed to fetch calls: ${res.status}`);
+      }
+      const data = await res.json();
+      setCallLogs(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error(err);
+      setCallLogs([]);
+    }
+  }, [currentUser.id]);
+
   useEffect(() => {
     if (showCalls) {
-      if (typeof window !== "undefined") {
-        fetch(`${API_BASE}/calls?userId=${encodeURIComponent(currentUser.id)}`)
-          .then((res) => {
-            if (!res.ok) {
-              throw new Error(`Failed to fetch calls: ${res.status}`);
-            }
-            return res.json();
-          })
-          .then((data) => {
-            setCallLogs(Array.isArray(data) ? data : []);
-          })
-          .catch((err) => {
-            console.error(err);
-            setCallLogs([]);
-          });
-      }
+      void refreshCallLogs();
     }
-  }, [showCalls, currentUser.id]);
+  }, [showCalls, refreshCallLogs]);
+
+  useEffect(() => {
+    if (!socket) return;
+    const handleHistoryUpdated = () => {
+      if (showCalls) void refreshCallLogs();
+    };
+    socket.on("call:history-updated", handleHistoryUpdated);
+    return () => {
+      socket.off("call:history-updated", handleHistoryUpdated);
+    };
+  }, [socket, showCalls, refreshCallLogs]);
+
+  const formatDuration = (seconds?: number | null) => {
+    if (seconds === undefined || seconds === null) return "";
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  };
+
+  const formatCallTimestamp = (timestamp?: number) => {
+    if (!timestamp) return "";
+    const date = new Date(timestamp);
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+    const isSameDate = (a: Date, b: Date) =>
+      a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate();
+    if (isSameDate(date, today)) return `Today ${format(date, "h:mm a")}`;
+    if (isSameDate(date, yesterday)) return `Yesterday ${format(date, "h:mm a")}`;
+    return format(date, "MMM d");
+  };
+
+  const formatCallStatus = (log: CallHistoryItem) => {
+    if (log.status === "ended") return log.durationSeconds ? `Ended - ${formatDuration(log.durationSeconds)}` : "Ended";
+    if (log.status === "missed") return "Missed";
+    if (log.status === "declined") return "Declined";
+    if (log.status === "cancelled") return "Cancelled";
+    if (log.status === "busy") return "Busy";
+    if (log.status === "unavailable") return "Unavailable";
+    if (log.status === "failed") return "Failed";
+    if (log.endReason === "no_answer") return "No answer";
+    return log.status.replace(/_/g, " ");
+  };
+
+  const startCallFromLog = async (log: CallHistoryItem, isVideo: boolean) => {
+    const otherUser = log.otherUser;
+    const allChats = await fetchChats(currentUser.id);
+    const matchingChat = allChats.find((chat) => chat.id === log.chatId);
+    if (!matchingChat) return;
+    const other = !matchingChat.isGroup
+      ? matchingChat.participants?.find((p) => p.id !== currentUser.id)
+      : undefined;
+    onSelectChat(matchingChat);
+    setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("START_CALL", {
+          detail: {
+            chatId: matchingChat.id,
+            calleeId: other?.id || otherUser?.id,
+            calleeName: other?.name || otherUser?.name || "Call",
+            calleeAvatar: other?.avatar || otherUser?.avatar,
+            isVideo,
+          },
+        }),
+      );
+    }, 300);
+  };
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-slate-800 z-10 w-full relative overflow-hidden shadow-sm transition-colors duration-300">
@@ -1283,10 +1354,10 @@ export function Sidebar({
                  } else if (log.status === "unavailable") {
                     statusText = "Unavailable";
                  }
-                 const isProblemStatus = ["declined", "missed", "busy", "failed", "unavailable"].includes(log.status);
+                 const isProblemStatus = ["declined", "missed", "busy", "failed", "unavailable", "cancelled"].includes(log.status);
 
                  return (
-                   <div key={log.id} className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                   <div key={log.id} onClick={() => setSelectedCallLog(log)} className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer">
                      <div className="w-12 h-12 rounded-full bg-slate-300 dark:bg-slate-700 flex items-center justify-center text-slate-500 shrink-0 overflow-hidden">
                        {otherUser?.avatar ? (
                          <img src={otherUser.avatar} alt={otherName} className="w-full h-full object-cover" />
@@ -1310,35 +1381,28 @@ export function Sidebar({
                             ) : (
                                <ArrowLeft className={cn("w-4 h-4 rotate-180", isProblemStatus ? "text-red-500" : "text-emerald-500")} />
                             )}
-                            <span className="capitalize">{typeLabel} • {statusText}</span>
+                            <span className="capitalize">{typeLabel} - {formatCallStatus(log) || statusText}</span>
                          </div>
                          <div className="flex items-center space-x-2">
-                           <button onClick={async () => {
-                             // Find the matching chat
-                             const { fetchChats } = await import("../api");
-                             const allChats = await fetchChats(currentUser.id);
-                             const matchingChat = allChats.find(c => c.id === log.chatId);
-                             const other = matchingChat && !matchingChat.isGroup
-                               ? matchingChat.participants?.find((p: any) => p.id !== currentUser.id)
-                               : undefined;
-                             if (matchingChat) {
-                               onSelectChat(matchingChat);
-                               setTimeout(() => {
-                                 window.dispatchEvent(
-                                  new CustomEvent("START_CALL", {
-                                    detail: {
-                                      chatId: matchingChat.id,
-                                      calleeId: other?.id || otherUser?.id,
-                                      calleeName: other?.name || otherName,
-                                      calleeAvatar: other?.avatar || otherUser?.avatar,
-                                      isVideo: log.type === "video",
-                                    },
-                                  }),
-                                );
-                               }, 300);
-                             }
-                           }} className="text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 p-2 rounded-full transition">
-                              <Phone className="w-5 h-5 fill-current" />
+                           <button
+                             onClick={(event) => {
+                               event.stopPropagation();
+                               void startCallFromLog(log, false);
+                             }}
+                             className="text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 p-2 rounded-full transition"
+                             title="Audio call"
+                           >
+                              <Phone className="w-5 h-5" />
+                           </button>
+                           <button
+                             onClick={(event) => {
+                               event.stopPropagation();
+                               void startCallFromLog(log, true);
+                             }}
+                             className="text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 p-2 rounded-full transition"
+                             title="Video call"
+                           >
+                              <VideoIcon className="w-5 h-5" />
                            </button>
                          </div>
                        </div>
@@ -1349,6 +1413,96 @@ export function Sidebar({
             </div>
           )}
         </div>
+        {selectedCallLog && (
+          <div className="absolute inset-0 z-30 bg-black/45 flex items-center justify-center p-4">
+            <div className="w-full max-w-sm rounded-xl bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+              <div className="flex justify-end p-3">
+                <button
+                  onClick={() => setSelectedCallLog(null)}
+                  className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800"
+                  title="Close"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="px-6 pb-6 flex flex-col items-center text-center">
+                <div className="w-24 h-24 rounded-full bg-slate-300 dark:bg-slate-700 flex items-center justify-center overflow-hidden mb-4">
+                  {selectedCallLog.otherUser?.avatar ? (
+                    <img src={selectedCallLog.otherUser.avatar} alt={selectedCallLog.otherUser.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <UserIcon className="w-10 h-10 text-slate-500" />
+                  )}
+                </div>
+                <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
+                  {selectedCallLog.otherUser?.name || "Call"}
+                </h2>
+                <p className="text-sm text-slate-500 capitalize mt-1">
+                  {selectedCallLog.direction} {selectedCallLog.type} call - {formatCallStatus(selectedCallLog)}
+                </p>
+
+                <div className="w-full mt-6 text-left text-sm space-y-2 text-slate-600 dark:text-slate-300">
+                  <div className="flex justify-between gap-4">
+                    <span>Started</span>
+                    <span>{formatCallTimestamp(selectedCallLog.startedAt)}</span>
+                  </div>
+                  {selectedCallLog.ringingAt && (
+                    <div className="flex justify-between gap-4">
+                      <span>Rang</span>
+                      <span>{format(new Date(selectedCallLog.ringingAt), "MMM d, h:mm a")}</span>
+                    </div>
+                  )}
+                  {selectedCallLog.acceptedAt && (
+                    <div className="flex justify-between gap-4">
+                      <span>Accepted</span>
+                      <span>{format(new Date(selectedCallLog.acceptedAt), "MMM d, h:mm a")}</span>
+                    </div>
+                  )}
+                  {selectedCallLog.connectedAt && (
+                    <div className="flex justify-between gap-4">
+                      <span>Connected</span>
+                      <span>{format(new Date(selectedCallLog.connectedAt), "MMM d, h:mm a")}</span>
+                    </div>
+                  )}
+                  {selectedCallLog.endedAt && (
+                    <div className="flex justify-between gap-4">
+                      <span>Ended</span>
+                      <span>{format(new Date(selectedCallLog.endedAt), "MMM d, h:mm a")}</span>
+                    </div>
+                  )}
+                  {selectedCallLog.durationSeconds !== undefined && selectedCallLog.durationSeconds !== null && (
+                    <div className="flex justify-between gap-4">
+                      <span>Duration</span>
+                      <span>{formatDuration(selectedCallLog.durationSeconds)}</span>
+                    </div>
+                  )}
+                  {selectedCallLog.endReason && (
+                    <div className="flex justify-between gap-4">
+                      <span>Reason</span>
+                      <span className="capitalize">{selectedCallLog.endReason.replace(/_/g, " ")}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 w-full mt-6">
+                  <button
+                    onClick={() => void startCallFromLog(selectedCallLog, false)}
+                    className="py-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center justify-center gap-2"
+                  >
+                    <Phone className="w-4 h-4" />
+                    Call
+                  </button>
+                  <button
+                    onClick={() => void startCallFromLog(selectedCallLog, true)}
+                    className="py-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold flex items-center justify-center gap-2"
+                  >
+                    <VideoIcon className="w-4 h-4" />
+                    Video
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Status Pane */}
