@@ -11,7 +11,7 @@ import { AuthScreen } from "./components/AuthScreen";
 import { Chat, User } from "./types";
 import { ThemeProvider } from "./ThemeContext";
 import { cn } from "./lib/utils";
-import { fetchUser } from "./api";
+import { API_BASE } from "./api";
 import {
   Menu,
   ArrowLeft,
@@ -39,17 +39,43 @@ export default function App() {
   const [activeRailTab, setActiveRailTab] = useState<string>("chats");
 
   useEffect(() => {
-    if (currentUser) {
-      localStorage.setItem("whatsclone_user_real", JSON.stringify(currentUser));
-      // Validate user
-      fetchUser(currentUser.id).catch(() => {
-        localStorage.removeItem("whatsclone_user_real");
-        setCurrentUser(null);
-      });
-    } else {
+    if (!currentUser) {
       localStorage.removeItem("whatsclone_user_real");
+      return;
     }
-  }, [currentUser]);
+
+    localStorage.setItem("whatsclone_user_real", JSON.stringify(currentUser));
+
+    let cancelled = false;
+
+    async function validateCurrentUser() {
+      try {
+        const res = await fetch(`${API_BASE}/users/${currentUser.id}`);
+
+        if (cancelled) return;
+
+        if (res.status === 404) {
+          localStorage.removeItem("whatsclone_user_real");
+          setCurrentUser(null);
+          return;
+        }
+
+        if (!res.ok) {
+          console.error("Failed to validate current user", res.status);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Failed to validate current user", err);
+        }
+      }
+    }
+
+    validateCurrentUser();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id]);
 
   if (!currentUser) {
     return <AuthScreen onAuthSuccess={setCurrentUser} />;

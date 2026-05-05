@@ -1,4 +1,4 @@
-import React, { useEffect, useState, FormEvent } from "react";
+import React, { useEffect, useState, FormEvent, useCallback } from "react";
 import { format } from "date-fns";
 import {
   MessageSquarePlus,
@@ -126,6 +126,29 @@ export function Sidebar({
 
   const { socket, isConnected } = useSocket();
 
+  const sortUsersForDiscovery = useCallback(
+    (users: User[]) =>
+      users
+        .filter((u) => u.id !== currentUser.id)
+        .sort((a, b) => {
+          if (a.online !== b.online) return a.online ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        }),
+    [currentUser.id]
+  );
+
+  const refreshUserDiscovery = useCallback(
+    async (query = userSearchQuery) => {
+      try {
+        const users = await fetchUsers(query);
+        setUsersToChat(sortUsersForDiscovery(users));
+      } catch (err) {
+        console.error("Failed to fetch users", err);
+      }
+    },
+    [userSearchQuery, sortUsersForDiscovery]
+  );
+
   useEffect(() => {
     localStorage.setItem("whatsclone_contacts", JSON.stringify(contacts));
   }, [contacts]);
@@ -180,11 +203,7 @@ export function Sidebar({
     const handleUserUpdate = () => {
       // Re-fetch users and chats
       if (showAddContact) {
-         import("../api").then((api) => {
-           api.fetchUsers(userSearchQuery).then((users) => {
-             setUsersToChat(users.filter((u) => u.id !== currentUser.id));
-           }).catch(console.error);
-         });
+         refreshUserDiscovery(userSearchQuery);
       }
       import("../api").then(api => api.fetchChats().then(setChats).catch(console.error));
     };
@@ -198,12 +217,14 @@ export function Sidebar({
       socket.off("user_updated", handleUserUpdate);
       socket.off("presence_updated", handleUserUpdate);
     };
-  }, [socket, showAddContact, userSearchQuery, currentUser.id]);
+  }, [socket, showAddContact, userSearchQuery, currentUser.id, refreshUserDiscovery]);
 
   const handleNewChat = () => {
     setShowContacts(true);
     setShowAddContact(true);
     setShowOptionsPopup(false);
+    setUserSearchQuery("");
+    refreshUserDiscovery("");
   };
 
   const handleCreateContactChat = async (contact: Contact) => {
@@ -234,13 +255,9 @@ export function Sidebar({
 
   useEffect(() => {
     if (showAddContact) {
-      fetchUsers(userSearchQuery)
-        .then((users) => {
-          setUsersToChat(users.filter((u) => u.id !== currentUser.id));
-        })
-        .catch(console.error);
+      refreshUserDiscovery(userSearchQuery);
     }
-  }, [showAddContact, userSearchQuery, currentUser.id]);
+  }, [showAddContact, userSearchQuery, refreshUserDiscovery]);
 
   const handleStartDirectChat = async (targetUserId: string) => {
     try {
@@ -673,6 +690,7 @@ export function Sidebar({
                       body: JSON.stringify({ avatar: newAvatarUrl })
                     });
                     if (res.status === 404) {
+                      localStorage.removeItem("whatsclone_user_real");
                       alert("Your local user no longer exists. Please register again.");
                       onUpdateUser(null);
                     } else if (res.ok) {
@@ -680,9 +698,13 @@ export function Sidebar({
                         ...currentUser,
                         avatar: newAvatarUrl,
                       });
+                    } else {
+                      console.error("Failed to update profile avatar on server");
+                      alert("Failed to update profile photo. Please try again.");
                     }
                   } catch (err) {
                     console.error("Failed to upload avatar", err);
+                    alert("Failed to update profile photo. Please try again.");
                   }
                 }}
               />
@@ -701,13 +723,22 @@ export function Sidebar({
                 }
                 onBlur={async (e) => {
                    try {
-                     await fetch(`${API_BASE}/users/${currentUser.id}/profile`, {
+                     const res = await fetch(`${API_BASE}/users/${currentUser.id}/profile`, {
                         method: "PUT",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ name: e.target.value })
                      });
+                     if (res.status === 404) {
+                       localStorage.removeItem("whatsclone_user_real");
+                       alert("Your local user no longer exists. Please register again.");
+                       onUpdateUser(null);
+                     } else if (!res.ok) {
+                       console.error("Failed to update name on server");
+                       alert("Failed to update profile name. Please try again.");
+                     }
                    } catch (err) {
                      console.error("Failed to update name", err);
+                     alert("Failed to update profile name. Please try again.");
                    }
                 }}
                 className="text-sm font-semibold text-slate-800 dark:text-slate-200 w-full outline-none bg-transparent"
@@ -1000,17 +1031,11 @@ export function Sidebar({
               </h3>
               <div className="flex items-center space-x-2">
                 <button
-                  onClick={() => {
-                     import("../api").then((api) => {
-                       api.fetchUsers(userSearchQuery).then((users) => {
-                         setUsersToChat(users.filter((u) => u.id !== currentUser.id));
-                       }).catch(console.error);
-                     });
-                  }}
+                  onClick={() => refreshUserDiscovery(userSearchQuery)}
                   className="text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 dark:text-indigo-400 px-3 py-1.5 rounded-full transition-colors flex items-center"
                 >
                   <RefreshCw className="w-3 h-3 mr-1" />
-                  Refresh
+                  Refresh users
                 </button>
                 <button
                   onClick={() => setShowAddContact(false)}
