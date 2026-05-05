@@ -124,6 +124,12 @@ db.exec(`
   );
 `);
 
+try {
+  db.prepare("ALTER TABLE users ADD COLUMN email TEXT").run();
+} catch (e) {
+  // Column might already exist
+}
+
 // Helper to sanitize filenames
 function sanitizeFilename(name: string) {
   return name.replace(/[^a-zA-Z0-9.-]/g, "_");
@@ -146,7 +152,7 @@ const connectedSockets = new Map<string, string>();
 
 function loadChats() {
   const chats = db.prepare("SELECT * FROM chats").all() as any[];
-  const allUsers = db.prepare("SELECT id, name, avatar, phone, email, lastActive FROM users").all() as any[];
+  const allUsers = db.prepare("SELECT id, name, avatar, phone, email, lastActive, lastActivePrivacy FROM users").all() as any[];
   
   for (const chat of chats) {
     chat.isGroup = !!chat.isGroup;
@@ -167,7 +173,8 @@ function loadChats() {
       // Add online status based on connectedSockets
       return {
         ...user,
-        online: Array.from(connectedSockets.values()).includes(uid)
+        online: Array.from(connectedSockets.values()).includes(uid),
+        privacy: user.lastActivePrivacy || "everyone"
       };
     });
 
@@ -511,7 +518,7 @@ async function startServer() {
   });
 
   app.put("/api/users/:userId/profile", (req, res) => {
-    const { name, avatar } = req.body;
+    const { name, avatar, phone, email } = req.body;
     const userId = req.params.userId;
     const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
     if (!user) {
@@ -527,6 +534,26 @@ async function startServer() {
       db.prepare("UPDATE users SET avatar = ? WHERE id = ?").run(avatar, userId);
       user.avatar = avatar;
     }
+    if (phone !== undefined) {
+      db.prepare("UPDATE users SET phone = ? WHERE id = ?").run(phone, userId);
+      user.phone = phone;
+    }
+    if (email !== undefined) {
+      db.prepare("UPDATE users SET email = ? WHERE id = ?").run(email, userId);
+      user.email = email;
+    }
+    
+    user.online = Array.from(connectedSockets.values()).includes(userId);
+    user.privacy = user.lastActivePrivacy || "everyone";
+
+    io.emit("user_updated", user);
+    io.emit("presence_updated", {
+      userId,
+      online: user.online,
+      lastActive: user.lastActive,
+      privacy: user.privacy
+    });
+
     res.json(user);
   });
 
@@ -708,12 +735,19 @@ async function startServer() {
       if (m.isDeleted) continue;
 
       if (m.attachmentUrl && m.attachmentType) {
+        let size = 0;
+        const match = m.attachmentUrl.match(/\/api\/files\/(file_[a-z0-9]+)/);
+        if (match) {
+           const f = db.prepare("SELECT size FROM file_attachments WHERE fileId = ?").get(match[1]) as any;
+           if (f) size = f.size;
+        }
+
         const item = {
           id: m.id,
           messageId: m.id,
-          fileName: m.attachmentName,
+          fileName: m.attachmentName || "Unknown File",
           mimeType: m.attachmentType,
-          size: m.attachmentSize || 0,
+          size: size,
           url: m.attachmentUrl,
           senderId: m.senderId,
           senderName: m.senderName,

@@ -27,6 +27,7 @@ import {
   fetchStarredMessages,
   fetchUsers,
   createDirectChat,
+  API_BASE,
 } from "../api";
 import { cn, formatLastActive } from "../lib/utils";
 import { useTheme } from "../ThemeContext";
@@ -373,7 +374,7 @@ export function Sidebar({
   useEffect(() => {
     if (showCalls) {
       if (typeof window !== "undefined") {
-        fetch(`${window.location.origin}/api/calls?userId=${currentUser.id}`)
+        fetch(`${API_BASE}/calls?userId=${currentUser.id}`)
           .then(res => res.json())
           .then(setCallLogs)
           .catch(console.error);
@@ -647,7 +648,7 @@ export function Sidebar({
                     const data = await uploadFile(file, currentUser.id);
                     const newAvatarUrl = data.url;
                     
-                    const res = await fetch(`${window.location.origin}/api/users/${currentUser.id}/profile`, {
+                    const res = await fetch(`${API_BASE}/users/${currentUser.id}/profile`, {
                       method: "PUT",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ avatar: newAvatarUrl })
@@ -678,7 +679,7 @@ export function Sidebar({
                 }
                 onBlur={async (e) => {
                    try {
-                     await fetch(`${window.location.origin}/api/users/${currentUser.id}/profile`, {
+                     await fetch(`${API_BASE}/users/${currentUser.id}/profile`, {
                         method: "PUT",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ name: e.target.value })
