@@ -2,7 +2,6 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import { Server as SocketIOServer } from "socket.io";
 import { createServer } from "http";
-import net from "net";
 import path from "path";
 import fs from "fs";
 import Database from "better-sqlite3";
@@ -243,6 +242,11 @@ async function startServer() {
   io.on("connection", (socket) => {
     socket.on("identify", (userId: string) => {
       connectedSockets.set(socket.id, userId);
+      socket.join(userId);
+      const allChats = loadChats();
+      const userChats = allChats.filter((c: any) => c.members?.includes(userId));
+      userChats.forEach((c: any) => socket.join(c.id));
+
       const user = db
         .prepare("SELECT * FROM users WHERE id = ?")
         .get(userId) as any;
@@ -720,8 +724,26 @@ async function startServer() {
     res.json(user);
   });
 
+  app.get("/api/debug/chats", (req, res) => {
+    const allChats = loadChats();
+    const result = allChats.map(c => ({
+      chatId: c.id,
+      isGroup: c.isGroup,
+      name: c.name,
+      members: c.participants?.map((p: any) => ({ id: p.id, name: p.name })) || [],
+      messageCount: loadMessages(c.id).length,
+      lastMessage: c.lastMessage
+    }));
+    res.json(result);
+  });
+
   app.get("/api/chats", (req, res) => {
-    res.json(loadChats());
+    const userId = req.query.userId as string;
+    const allChats = loadChats();
+    if (userId) {
+      return res.json(allChats.filter((c: any) => c.members?.includes(userId)));
+    }
+    res.json(allChats);
   });
 
   app.get("/api/chats/:chatId/attachments", (req, res) => {
@@ -900,7 +922,9 @@ async function startServer() {
     const updatedChat = loadChats().find((c) => c.id === chatId);
 
     io.to(chatId).emit("receive_message", fullMsg);
-    io.emit("chat_updated", updatedChat);
+    if (updatedChat && updatedChat.members) {
+      updatedChat.members.forEach((uid: string) => io.to(uid).emit("chat_updated", updatedChat));
+    }
 
     const members = updatedChat?.members || [];
     const onlineOthers = members.filter(
@@ -996,12 +1020,16 @@ async function startServer() {
       "INSERT INTO chat_members (chatId, userId) VALUES (?, ?)",
     );
     insertMember.run(id, currentUserId);
+    io.in(currentUserId).socketsJoin(id);
     if (currentUserId !== targetUserId) {
       insertMember.run(id, targetUserId);
+      io.in(targetUserId).socketsJoin(id);
     }
 
     const newChat = loadChats().find((c) => c.id === id);
-    io.emit("new_chat", newChat);
+    if (newChat && newChat.members) {
+      newChat.members.forEach((uid: string) => io.to(uid).emit("new_chat", newChat));
+    }
     res.status(201).json(newChat);
   });
 
@@ -1017,10 +1045,15 @@ async function startServer() {
     const insertMember = db.prepare(
       "INSERT INTO chat_members (chatId, userId) VALUES (?, ?)",
     );
-    if (members) members.forEach((uid: string) => insertMember.run(id, uid));
+    if (members) members.forEach((uid: string) => {
+      insertMember.run(id, uid);
+      io.in(uid).socketsJoin(id);
+    });
 
     const newChat = loadChats().find((c) => c.id === id);
-    io.emit("new_chat", newChat);
+    if (newChat && newChat.members) {
+      newChat.members.forEach((uid: string) => io.to(uid).emit("new_chat", newChat));
+    }
     res.status(201).json(newChat);
   });
 
@@ -1205,19 +1238,11 @@ async function startServer() {
     console.log("Socket connection error:", err);
   });
 
-  async function createDevServer() {
-    return createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: false,
-        ws: false,
-      },
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
       appType: "spa",
     });
-  }
-
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createDevServer();
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
@@ -1225,34 +1250,12 @@ async function startServer() {
     app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
-  async function findAvailablePort(startPort: number) {
-    for (let port = startPort; port <= 65535; port += 1) {
-      const isAvailable = await new Promise<boolean>((resolve) => {
-        const tester = net.createServer();
-        tester.unref();
-
-        tester.once("error", () => resolve(false));
-        tester.listen(port, HOST, () => {
-          tester.close(() => resolve(true));
-        });
-      });
-
-      if (isAvailable) {
-        return port;
-      }
-    }
-
-    throw new Error("No available ports found");
-  }
-
-  const actualPort = await findAvailablePort(PORT);
-
-  httpServer.listen(actualPort, HOST, () => {
+  httpServer.listen(PORT, HOST, () => {
     console.log(`\n=================================`);
     console.log(`  GlassChat Local Server     `);
     console.log(`=================================`);
-    console.log(`Local Access:      http://localhost:${actualPort}`);
-    console.log(`Network/Tailscale: http://${HOST}:${actualPort}`);
+    console.log(`Local Access:      http://localhost:${PORT}`);
+    console.log(`Network/Tailscale: http://${HOST}:${PORT}`);
     console.log(`Database Path:     ${DB_PATH}`);
     console.log(`Uploads Directory: ${UPLOAD_DIR}`);
     console.log(`=================================\n`);

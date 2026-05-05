@@ -154,8 +154,8 @@ export function Sidebar({
   }, [contacts]);
 
   useEffect(() => {
-    fetchChats().then(setChats).catch(console.error);
-  }, []);
+    fetchChats(currentUser.id).then(setChats).catch(console.error);
+  }, [currentUser.id]);
 
   useEffect(() => {
     if (!socket) return;
@@ -205,7 +205,7 @@ export function Sidebar({
       if (showAddContact) {
          refreshUserDiscovery(userSearchQuery);
       }
-      import("../api").then(api => api.fetchChats().then(setChats).catch(console.error));
+      import("../api").then(api => api.fetchChats(currentUser.id).then(setChats).catch(console.error));
     };
 
     socket.on("user_updated", handleUserUpdate);
@@ -1306,6 +1306,7 @@ export function Sidebar({
                                       chatId: matchingChat.id,
                                       callerId: currentUser.id,
                                       callerName: currentUser.name,
+                                      calleeId: !matchingChat.isGroup ? matchingChat.participants?.find((p: any) => p.id !== currentUser.id)?.id : undefined,
                                       isVideo: log.type === "video",
                                     },
                                   }),

@@ -13,6 +13,7 @@ interface CallData {
   chatId: string;
   callerId: string;
   callerName: string;
+  calleeId?: string;
   isVideo: boolean;
   callLogId?: string;
   offer?: RTCSessionDescriptionInit;
@@ -134,7 +135,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
 
     const startOutgoingCall = async (e: Event) => {
       const customEvent = e as CustomEvent<CallData>;
-      const { chatId, callerId, callerName, isVideo } = customEvent.detail;
+      const { chatId, callerId, callerName, calleeId, isVideo } = customEvent.detail;
 
       if (!window.isSecureContext && window.location.hostname !== "localhost") {
          setHasError("Camera and microphone require HTTPS on mobile browsers. Use Tailscale Serve HTTPS URL.");
@@ -170,7 +171,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        socket.emit("call:start", { chatId, callerId, callerName, isVideo, offer, callLogId: logId });
+        socket.emit("call:start", { chatId, callerId, callerName, calleeId, isVideo, offer, callLogId: logId });
       } catch (err) {
         console.error("Failed to start call", err);
         setHasError("Could not access camera/microphone. Please ensure permissions are granted.");

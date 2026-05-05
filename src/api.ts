@@ -56,8 +56,8 @@ export async function createDirectChat(
   return res.json();
 }
 
-export async function fetchChats(): Promise<Chat[]> {
-  const res = await fetch(`${API_BASE}/chats`);
+export async function fetchChats(userId: string): Promise<Chat[]> {
+  const res = await fetch(`${API_BASE}/chats?userId=${encodeURIComponent(userId)}`);
   if (!res.ok) throw new Error("Failed to fetch chats");
   return res.json();
 }

@@ -24,7 +24,7 @@ export function ForwardModal({
   const [forwarding, setForwarding] = useState(false);
 
   useEffect(() => {
-    fetchChats()
+    fetchChats(currentUser.id)
       .then((data) => {
         setChats(data);
         setLoading(false);

@@ -549,12 +549,9 @@ export function ChatWindow({
 
   const initiateCall = (isVideo: boolean) => {
     if (!socket) return;
-    socket.emit("call_user", {
-      chatId: chat.id,
-      callerId: currentUser.id,
-      callerName: currentUser.name,
-      isVideo,
-    });
+    const calleeId = !chat.isGroup 
+      ? chat.participants?.find((p) => p.id !== currentUser.id)?.id
+      : undefined;
 
     window.dispatchEvent(
       new CustomEvent("START_CALL", {
@@ -562,6 +559,7 @@ export function ChatWindow({
           chatId: chat.id,
           callerId: currentUser.id,
           callerName: chatName,
+          calleeId,
           isVideo,
         },
       }),
