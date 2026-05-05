@@ -4,11 +4,12 @@ import {
   X, Search, Trash2, Ban, 
   Image as ImageIcon, FileText, Link as LinkIcon, 
   Download, ChevronRight, MapPin, 
-  ChevronLeft, FileIcon
+  ChevronLeft, FileIcon, Phone, Video
 } from "lucide-react";
 import { Chat, User } from "../types";
 import { cn, formatLastActive } from "../lib/utils";
 import { API_BASE, fetchChatAttachments } from "../api";
+import { useCall } from "../CallContext";
 
 interface ContactInfoPanelProps {
   chat: Chat;
@@ -34,6 +35,8 @@ export function ContactInfoPanel({
     links: any[];
   }>({ media: [], files: [], links: [] });
 
+  const { startCall } = useCall();
+
   useEffect(() => {
     fetchChatAttachments(chat.id)
       .then(setAttachments)
@@ -50,6 +53,20 @@ export function ContactInfoPanel({
   const lastActive = otherParticipant?.lastActive;
   const phone = otherParticipant?.phone;
   const email = otherParticipant?.email;
+
+  const initiateCall = (isVideo: boolean) => {
+    if (chat.isGroup) {
+      alert("Calls are only supported in direct chats.");
+      return;
+    }
+    const calleeId = otherParticipant?.id;
+    if (!calleeId) {
+      alert("Could not find the other user to call.");
+      return;
+    }
+    startCall(chat.id, calleeId, isVideo);
+  };
+
 
   const renderTabs = () => {
     switch (activeTab) {
@@ -145,7 +162,7 @@ export function ContactInfoPanel({
               {email && <p className="text-sm text-slate-500 dark:text-[#8696a0] mb-3">{email}</p>}
               
               {!chat.isGroup && (
-                <div className="text-sm font-medium">
+                <div className="text-sm font-medium mb-6">
                   {isOnline ? (
                     <span className="text-emerald-500 dark:text-[#00a884]">Online</span>
                   ) : lastActive ? (
@@ -154,6 +171,25 @@ export function ContactInfoPanel({
                    <span className="text-slate-500 dark:text-[#8696a0]">Offline</span>
                   )}
                 </div>
+              )}
+
+              {!chat.isGroup && (
+                 <div className="flex space-x-6 w-full justify-center px-4 mt-2">
+                   <button 
+                     onClick={() => initiateCall(false)}
+                     className="flex flex-col items-center justify-center p-3 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 text-indigo-500 dark:text-[#00a884] transition w-24"
+                   >
+                     <Phone className="w-6 h-6 mb-2" />
+                     <span className="text-sm font-medium">Audio</span>
+                   </button>
+                   <button 
+                     onClick={() => initiateCall(true)}
+                     className="flex flex-col items-center justify-center p-3 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 text-indigo-500 dark:text-[#00a884] transition w-24"
+                   >
+                     <Video className="w-6 h-6 mb-2" />
+                     <span className="text-sm font-medium">Video</span>
+                   </button>
+                 </div>
               )}
             </div>
 
