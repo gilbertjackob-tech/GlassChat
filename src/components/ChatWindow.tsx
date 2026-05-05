@@ -291,6 +291,12 @@ export function ChatWindow({
     });
 
     const handleNewMessage = (msg: Message) => {
+      console.log("CLIENT SOCKET MSG DEBUG:", {
+        receivedChatId: msg.chatId,
+        currentOpenChatId: chat.id,
+        senderName: msg.senderName,
+      });
+
       if (msg.chatId === chat.id) {
         setMessages((prev) => {
           if (prev.find((m) => m.id === msg.id)) return prev;

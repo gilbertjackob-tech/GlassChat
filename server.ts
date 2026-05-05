@@ -805,10 +805,27 @@ async function startServer() {
       return res.status(400).json({ error: "Content required" });
     }
 
+    const chatMembers = db
+      .prepare("SELECT userId FROM chat_members WHERE chatId = ?")
+      .all(chatId)
+      .map((r: any) => r.userId);
+
+    console.log("SERVER SEND MSG DEBUG:", {
+      chatId,
+      senderId,
+      senderName,
+      chatMembers,
+    });
+
     const chat = db
       .prepare("SELECT * FROM chats WHERE id = ?")
       .get(chatId) as any;
     if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    const isMember = db.prepare("SELECT 1 FROM chat_members WHERE chatId = ? AND userId = ?").get(chatId, senderId);
+    if (!isMember) {
+      return res.status(403).json({ error: "Sender is not a member of this chat" });
+    }
 
     // Handle base64 attachment extraction to filesystem
     if (attachmentUrl && attachmentUrl.startsWith("data:")) {
@@ -937,18 +954,26 @@ async function startServer() {
         .status(400)
         .json({ error: "currentUserId and targetUserId required" });
 
-    // Find existing direct chat between these two users
-    const allChats = loadChats();
-    const existingChat = allChats.find(
-      (c) =>
-        !c.isGroup &&
-        c.members?.length === 2 &&
-        c.members.includes(currentUserId) &&
-        c.members.includes(targetUserId),
-    );
+    // Find existing direct chat between exact these two users
+    const existingChatRow = db.prepare(`
+      SELECT c.*
+      FROM chats c
+      JOIN chat_members m1 ON m1.chatId = c.id AND m1.userId = ?
+      JOIN chat_members m2 ON m2.chatId = c.id AND m2.userId = ?
+      WHERE c.isGroup = 0
+      AND (
+        SELECT COUNT(*)
+        FROM chat_members cm
+        WHERE cm.chatId = c.id
+      ) = 2
+      LIMIT 1;
+    `).get(currentUserId, targetUserId) as any;
 
-    if (existingChat) {
-      return res.json(existingChat);
+    if (existingChatRow) {
+      const existingChat = loadChats().find(c => c.id === existingChatRow.id);
+      if (existingChat) {
+        return res.json(existingChat);
+      }
     }
 
     // Get target user to name the chat (chats table has name)
@@ -970,7 +995,9 @@ async function startServer() {
       "INSERT INTO chat_members (chatId, userId) VALUES (?, ?)",
     );
     insertMember.run(id, currentUserId);
-    insertMember.run(id, targetUserId);
+    if (currentUserId !== targetUserId) {
+      insertMember.run(id, targetUserId);
+    }
 
     const newChat = loadChats().find((c) => c.id === id);
     io.emit("new_chat", newChat);
@@ -1147,6 +1174,29 @@ async function startServer() {
       db.prepare(`UPDATE call_logs SET ${updateFields.join(", ")} WHERE id = ?`).run(...params);
     }
     res.json({ success: true });
+  });
+
+  app.post("/api/dev/reset", (req, res) => {
+    db.prepare("DELETE FROM messages").run();
+    db.prepare("DELETE FROM chat_members").run();
+    db.prepare("DELETE FROM chats").run();
+    
+    // Re-add "group_main" if needed or leave empty.
+    const id = "group_main";
+    db.prepare(
+      "INSERT INTO chats (id, name, lastMessage, lastMessageTime, unreadCount, isGroup) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(id, "Community Chat", "", Date.now(), 0, 1);
+    
+    // Add all existing users to group_main
+    const users = db.prepare("SELECT id FROM users").all() as any[];
+    const insertMember = db.prepare(
+      "INSERT INTO chat_members (chatId, userId) VALUES (?, ?)",
+    );
+    for (const u of users) {
+      insertMember.run(id, u.id);
+    }
+    
+    res.json({ message: "Database chats and messages reset successfully." });
   });
 
   // Global socket error handler
