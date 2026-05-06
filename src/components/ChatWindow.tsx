@@ -553,6 +553,20 @@ export function ChatWindow({
     const other = !chat.isGroup
       ? chat.participants?.find((p) => p.id !== currentUser.id)
       : undefined;
+    if (chat.isGroup) {
+      const participants = (chat.participants || []).filter((p) => p.id !== currentUser.id);
+      window.dispatchEvent(
+        new CustomEvent("START_GROUP_CALL", {
+          detail: {
+            chatId: chat.id,
+            chatName,
+            participantIds: participants.map((p) => p.id),
+            isVideo,
+          },
+        }),
+      );
+      return;
+    }
     if (!other) return;
 
     window.dispatchEvent(

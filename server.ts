@@ -112,11 +112,14 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS call_logs (
     id TEXT PRIMARY KEY,
+    roomId TEXT,
+    mode TEXT,
     callerId TEXT,
     calleeId TEXT,
     chatId TEXT,
     type TEXT,
     status TEXT,
+    participantIds TEXT,
     createdAt INTEGER,
     startedAt INTEGER,
     ringingAt INTEGER,
@@ -125,7 +128,22 @@ db.exec(`
     answeredAt INTEGER,
     endedAt INTEGER,
     durationSeconds INTEGER,
-    endReason TEXT
+    endReason TEXT,
+    endedBy TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS call_rooms (
+    id TEXT PRIMARY KEY,
+    chatId TEXT,
+    hostId TEXT,
+    mode TEXT,
+    type TEXT,
+    status TEXT,
+    participantIds TEXT,
+    maxParticipants INTEGER,
+    createdAt INTEGER,
+    endedAt INTEGER,
+    endedBy TEXT
   );
 
   CREATE TABLE IF NOT EXISTS statuses (
@@ -146,6 +164,20 @@ db.exec(`
     PRIMARY KEY (statusId, userId)
   );
 `);
+
+function ensureColumn(table: string, column: string, definition: string) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as any[];
+  if (!columns.some((c) => c.name === column)) {
+    db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+  }
+}
+
+[
+  ["roomId", "TEXT"],
+  ["mode", "TEXT"],
+  ["participantIds", "TEXT"],
+  ["endedBy", "TEXT"],
+].forEach(([column, definition]) => ensureColumn("call_logs", column, definition));
 
 try { db.prepare("ALTER TABLE users ADD COLUMN email TEXT").run(); } catch(e){}
 try { db.prepare("ALTER TABLE users ADD COLUMN phone TEXT").run(); } catch(e){}
@@ -257,6 +289,33 @@ function getCall(callId: string) {
   return db.prepare("SELECT * FROM call_logs WHERE id = ?").get(callId) as any;
 }
 
+function parseJsonArray(value: any): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(String(value));
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getRoom(roomId: string) {
+  const room = db.prepare("SELECT * FROM call_rooms WHERE id = ?").get(roomId) as any;
+  if (!room) return null;
+  return {
+    ...room,
+    maxParticipants: room.maxParticipants || 4,
+    participantIds: parseJsonArray(room.participantIds),
+  };
+}
+
+function getChatMemberIds(chatId: string) {
+  return db
+    .prepare("SELECT userId FROM chat_members WHERE chatId = ?")
+    .all(chatId)
+    .map((r: any) => String(r.userId));
+}
+
 function isMember(chatId: string, userId: string) {
   return !!db
     .prepare("SELECT 1 FROM chat_members WHERE chatId = ? AND userId = ?")
@@ -286,6 +345,10 @@ function getCallHistoryForUser(userId: string) {
 
     return {
       id: call.id,
+      roomId: call.roomId,
+      mode: call.mode || "direct",
+      participantIds: parseJsonArray(call.participantIds),
+      endedBy: call.endedBy,
       chatId: call.chatId,
       callerId: call.callerId,
       calleeId: call.calleeId,
@@ -502,6 +565,84 @@ async function startServer() {
     );
     socket.on("call:media-state", (data) =>
       routeValidatedSignal("call:media-state", data),
+    );
+
+    socket.on("call:room-created", (data) => {
+      const actorId = String(data?.fromUserId || data?.userId || "");
+      const room = getRoom(String(data?.roomId || data?.id || data?.room?.id || ""));
+      if (!room) return failCallSignal(data, "room_not_found");
+      if (!isMember(room.chatId, actorId)) {
+        return failCallSignal(data, "not_chat_member");
+      }
+      socket.join(room.id);
+      room.participantIds.forEach((userId: string) => {
+        io.in(userId).emit("call:room-created", { ...data, room });
+      });
+    });
+
+    socket.on("call:room-join", (data) => {
+      const actorId = String(data?.fromUserId || data?.userId || "");
+      const room = getRoom(String(data?.roomId || ""));
+      if (!room) return failCallSignal(data, "room_not_found");
+      if (!isMember(room.chatId, actorId)) {
+        return failCallSignal(data, "not_chat_member");
+      }
+      if (!room.participantIds.includes(actorId)) {
+        if (room.participantIds.length >= 4) {
+          socket.emit("call:room-full", { roomId: room.id, maxParticipants: 4 });
+          return;
+        }
+        const participantIds = [...room.participantIds, actorId];
+        db.prepare("UPDATE call_rooms SET status = ?, participantIds = ? WHERE id = ?")
+          .run("active", JSON.stringify(participantIds), room.id);
+      }
+      socket.join(room.id);
+      io.in(room.id).emit("call:room-join", { ...data, userId: actorId, room: getRoom(room.id) });
+    });
+
+    socket.on("call:room-leave", (data) => {
+      const actorId = String(data?.fromUserId || data?.userId || "");
+      const room = getRoom(String(data?.roomId || ""));
+      if (!room) return;
+      socket.leave(room.id);
+      const participantIds = room.participantIds.filter((id: string) => id !== actorId);
+      const ended = participantIds.length <= 1 || data.end === true || data.ended === true;
+      db.prepare("UPDATE call_rooms SET status = ?, participantIds = ?, endedAt = COALESCE(endedAt, ?), endedBy = COALESCE(endedBy, ?) WHERE id = ?")
+        .run(ended ? "ended" : "active", JSON.stringify(participantIds), ended ? Date.now() : null, ended ? actorId : null, room.id);
+      io.in(room.id).emit("call:room-leave", { ...data, userId: actorId, ended, room: getRoom(room.id) });
+    });
+
+    socket.on("call:participant-state", (data) => {
+      const actorId = String(data?.fromUserId || data?.userId || "");
+      const room = getRoom(String(data?.roomId || ""));
+      if (!room || !isMember(room.chatId, actorId)) return;
+      io.in(room.id).emit("call:participant-state", { ...data, userId: actorId });
+    });
+
+    socket.on("call:stats", (data) => {
+      const room = getRoom(String(data?.roomId || ""));
+      if (room) io.in(room.id).emit("call:stats", data);
+      else if (data.toUserId) io.in(data.toUserId).emit("call:stats", data);
+    });
+
+    const routeRoomSignal = (event: string, data: any) => {
+      const actorId = String(data?.fromUserId || "");
+      const targetId = String(data?.toUserId || "");
+      const room = getRoom(String(data?.roomId || ""));
+      if (!room || !actorId || !targetId) return failCallSignal(data, "room_signal_invalid");
+      if (!room.participantIds.includes(actorId) || !room.participantIds.includes(targetId)) {
+        return failCallSignal(data, "room_participant_invalid");
+      }
+      if (!isMember(room.chatId, actorId) || !isMember(room.chatId, targetId)) {
+        return failCallSignal(data, "not_chat_member");
+      }
+      io.in(targetId).emit(event, data);
+    };
+
+    socket.on("call:room-offer", (data) => routeRoomSignal("call:room-offer", data));
+    socket.on("call:room-answer", (data) => routeRoomSignal("call:room-answer", data));
+    socket.on("call:room-ice-candidate", (data) =>
+      routeRoomSignal("call:room-ice-candidate", data),
     );
 
     socket.on("call:ringing", (data) => {
@@ -1586,7 +1727,7 @@ async function startServer() {
   });
 
   app.post("/api/calls", (req, res) => {
-    const { callerId, calleeId, chatId, type, status, startedAt } = req.body;
+    const { callerId, calleeId, chatId, type, status, startedAt, roomId, mode, participantIds } = req.body;
     if (!callerId || !calleeId || !chatId) {
       return res
         .status(400)
@@ -1610,14 +1751,26 @@ async function startServer() {
       status,
     });
     db.prepare(
-      "INSERT INTO call_logs (id, callerId, calleeId, chatId, type, status, createdAt, startedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(id, callerId, calleeId, chatId, type, status, now, startedAt || now);
+      "INSERT INTO call_logs (id, roomId, mode, callerId, calleeId, chatId, type, status, participantIds, createdAt, startedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(
+      id,
+      roomId || null,
+      mode || "direct",
+      callerId,
+      calleeId,
+      chatId,
+      type,
+      status,
+      participantIds ? JSON.stringify(participantIds) : null,
+      now,
+      startedAt || now,
+    );
     res.status(201).json({ id });
   });
 
   app.patch("/api/calls/:id", (req, res) => {
     const { id } = req.params;
-    const { status, ringingAt, acceptedAt, connectedAt, answeredAt, endedAt, durationSeconds, endReason } = req.body;
+    const { status, ringingAt, acceptedAt, connectedAt, answeredAt, endedAt, durationSeconds, endReason, endedBy } = req.body;
     let updateFields: string[] = [];
     let params: any[] = [];
 
@@ -1629,12 +1782,75 @@ async function startServer() {
     if (endedAt) { updateFields.push("endedAt = ?"); params.push(endedAt); }
     if (durationSeconds !== undefined) { updateFields.push("durationSeconds = ?"); params.push(durationSeconds); }
     if (endReason) { updateFields.push("endReason = ?"); params.push(endReason); }
+    if (endedBy) { updateFields.push("endedBy = ?"); params.push(endedBy); }
 
     if (updateFields.length > 0) {
       params.push(id);
       db.prepare(`UPDATE call_logs SET ${updateFields.join(", ")} WHERE id = ?`).run(...params);
     }
     res.json({ success: true });
+  });
+
+  app.post("/api/call-rooms", (req, res) => {
+    const { chatId, hostId, type = "video", participantIds = [] } = req.body;
+    if (!chatId || !hostId) {
+      return res.status(400).json({ error: "chatId and hostId are required" });
+    }
+    if (!isMember(chatId, hostId)) {
+      return res.status(403).json({ error: "host must be a chat member" });
+    }
+    const memberIds = getChatMemberIds(chatId);
+    const invitedIds = Array.from(new Set([hostId, ...participantIds.map(String)]))
+      .filter((id) => memberIds.includes(id));
+    if (invitedIds.length < 2) {
+      return res.status(400).json({ error: "group call requires at least 2 chat members" });
+    }
+    if (participantIds.length > 4 || invitedIds.length > 4) {
+      return res.status(400).json({ error: "group calls support up to 4 participants" });
+    }
+
+    const id = "room_" + Math.random().toString(36).slice(2, 11);
+    const callId = "call_" + Math.random().toString(36).slice(2, 11);
+    const now = Date.now();
+    db.prepare(
+      "INSERT INTO call_rooms (id, chatId, hostId, mode, type, status, participantIds, maxParticipants, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, chatId, hostId, "group", type, "ringing", JSON.stringify(invitedIds), 4, now);
+    db.prepare(
+      "INSERT INTO call_logs (id, roomId, mode, callerId, calleeId, chatId, type, status, participantIds, createdAt, startedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(callId, id, "group", hostId, invitedIds.find((p) => p !== hostId) || hostId, chatId, type, "outgoing_calling", JSON.stringify(invitedIds), now, now);
+    res.status(201).json({ ...getRoom(id), callId });
+  });
+
+  app.get("/api/call-rooms/:id", (req, res) => {
+    const room = getRoom(req.params.id);
+    if (!room) return res.status(404).json({ error: "room not found" });
+    res.json(room);
+  });
+
+  app.post("/api/call-rooms/:id/join", (req, res) => {
+    const room = getRoom(req.params.id);
+    const userId = String(req.body.userId || "");
+    if (!room) return res.status(404).json({ error: "room not found" });
+    if (!userId || !isMember(room.chatId, userId)) {
+      return res.status(403).json({ error: "user must be a chat member" });
+    }
+    const participantIds = Array.from(new Set([...room.participantIds, userId]));
+    if (participantIds.length > 4) {
+      return res.status(400).json({ error: "group calls support up to 4 participants" });
+    }
+    db.prepare("UPDATE call_rooms SET status = ?, participantIds = ? WHERE id = ?").run("active", JSON.stringify(participantIds), room.id);
+    res.json(getRoom(room.id));
+  });
+
+  app.post("/api/call-rooms/:id/leave", (req, res) => {
+    const room = getRoom(req.params.id);
+    const userId = String(req.body.userId || "");
+    if (!room) return res.status(404).json({ error: "room not found" });
+    const participantIds = room.participantIds.filter((id: string) => id !== userId);
+    const ended = participantIds.length <= 1 || req.body.end === true || req.body.ended === true;
+    db.prepare("UPDATE call_rooms SET status = ?, participantIds = ?, endedAt = COALESCE(endedAt, ?), endedBy = COALESCE(endedBy, ?) WHERE id = ?")
+      .run(ended ? "ended" : "active", JSON.stringify(participantIds), ended ? Date.now() : null, ended ? userId : null, room.id);
+    res.json(getRoom(room.id));
   });
 
   app.get("/api/statuses", (req, res) => {

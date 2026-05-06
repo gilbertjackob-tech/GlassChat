@@ -53,8 +53,61 @@ export type CallStatus =
   | "busy"
   | "unavailable";
 
+export type CallMode = "direct" | "group";
+
+export interface CallParticipant {
+  id: string;
+  name: string;
+  avatar?: string;
+  joinedAt?: number;
+  leftAt?: number;
+  isHost?: boolean;
+  mediaState?: CallMediaState;
+}
+
+export interface CallMediaState {
+  audioMuted: boolean;
+  videoOff: boolean;
+  screenSharing: boolean;
+  quality?: "auto" | "720p" | "1080p" | "2k";
+  beautyMode?: string;
+}
+
+export interface CallQualityStats {
+  label: "unknown" | "poor" | "fair" | "good";
+  rttMs?: number;
+  jitterMs?: number;
+  packetLossPercent?: number;
+  bitrateKbps?: number;
+  updatedAt: number;
+}
+
+export interface CallRoom {
+  id: string;
+  chatId: string;
+  hostId: string;
+  mode: CallMode;
+  type: "audio" | "video";
+  status: "ringing" | "active" | "ended";
+  maxParticipants: number;
+  participantIds: string[];
+  participants?: CallParticipant[];
+  createdAt: number;
+  endedAt?: number;
+  endedBy?: string;
+}
+
+export interface CallFeatureSupport {
+  screenShare: boolean;
+  recording: boolean;
+  captions: boolean;
+  pictureInPicture: boolean;
+  outputDeviceSelect: boolean;
+}
+
 export interface CallData {
   callId: string;
+  roomId?: string;
   chatId: string;
   callerId: string;
   callerName: string;
@@ -63,12 +116,17 @@ export interface CallData {
   calleeName?: string;
   calleeAvatar?: string;
   isVideo: boolean;
+  mode?: CallMode;
   status?: CallStatus;
   offer?: RTCSessionDescriptionInit;
 }
 
 export interface CallHistoryItem {
   id: string;
+  roomId?: string;
+  mode?: CallMode;
+  participantIds?: string[];
+  endedBy?: string;
   chatId: string;
   callerId: string;
   calleeId: string;

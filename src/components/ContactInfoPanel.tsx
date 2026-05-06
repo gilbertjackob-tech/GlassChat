@@ -9,7 +9,6 @@ import {
 import { Chat, User } from "../types";
 import { cn, formatLastActive } from "../lib/utils";
 import { API_BASE, fetchChatAttachments } from "../api";
-import { useCall } from "../CallContext";
 
 interface ContactInfoPanelProps {
   chat: Chat;
@@ -34,8 +33,6 @@ export function ContactInfoPanel({
     files: any[];
     links: any[];
   }>({ media: [], files: [], links: [] });
-
-  const { startCall } = useCall();
 
   useEffect(() => {
     fetchChatAttachments(chat.id)
@@ -64,7 +61,17 @@ export function ContactInfoPanel({
       alert("Could not find the other user to call.");
       return;
     }
-    startCall(chat.id, calleeId, isVideo);
+    window.dispatchEvent(
+      new CustomEvent("START_CALL", {
+        detail: {
+          chatId: chat.id,
+          calleeId,
+          calleeName: otherParticipant?.name || chatName,
+          calleeAvatar: otherParticipant?.avatar,
+          isVideo,
+        },
+      }),
+    );
   };
 
 
