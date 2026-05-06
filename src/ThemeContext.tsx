@@ -77,7 +77,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
     };
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
-  }, [theme]);
+  }, [theme, enterIsSend, chatWallpaper, chatWallpaperOpacity]);
 
   return (
     <ThemeContext.Provider value={{ theme, setTheme, isDark, enterIsSend, setEnterIsSend, chatWallpaper, setChatWallpaper, chatWallpaperOpacity, setChatWallpaperOpacity }}>

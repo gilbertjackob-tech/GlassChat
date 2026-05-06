@@ -88,7 +88,6 @@ export function NotificationProvider({ children, currentUser }: { children: Reac
         notifyUrgent(`Incoming ${call.isVideo ? "video " : ""}call from ${call.callerName || "Someone"}`, {
           body: "Click to answer",
           tag: `call-${call.callId}`,
-          vibrate: [200, 100, 200]
         });
       }
     };
