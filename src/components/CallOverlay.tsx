@@ -245,10 +245,14 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
   };
 
   const stopBeauty = () => {
-    if (beautyAnimationRef.current) cancelAnimationFrame(beautyAnimationRef.current);
+    if (beautyAnimationRef.current) window.clearTimeout(beautyAnimationRef.current);
     beautyAnimationRef.current = null;
     if (beautyVideoRef.current) {
       beautyVideoRef.current.srcObject = null;
+      if (beautyVideoRef.current.parentNode) {
+        beautyVideoRef.current.parentNode.removeChild(beautyVideoRef.current);
+      }
+      beautyVideoRef.current = null;
     }
     stopTracks(beautyStreamRef.current);
     beautyStreamRef.current = null;
@@ -419,7 +423,7 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
 
   const applyBeautyMode = (mode: "off" | "soft" | "strong" | "vintage" | "bw" | "vibrant" | "popart" | "cyberpunk" | "dreamy" | "alien", srcTrack: MediaStreamTrack | null = cameraVideoTrackRef.current) => {
     if (beautyAnimationRef.current) {
-      cancelAnimationFrame(beautyAnimationRef.current);
+      window.clearTimeout(beautyAnimationRef.current);
       beautyAnimationRef.current = null;
     }
     if (mode === "off" || !srcTrack || isScreenSharingRef.current) {
@@ -436,6 +440,12 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       beautyVideoRef.current.autoplay = true;
       beautyVideoRef.current.playsInline = true;
       beautyVideoRef.current.muted = true;
+      beautyVideoRef.current.style.position = "absolute";
+      beautyVideoRef.current.style.opacity = "0";
+      beautyVideoRef.current.style.pointerEvents = "none";
+      beautyVideoRef.current.style.width = "10px";
+      beautyVideoRef.current.style.height = "10px";
+      document.body.appendChild(beautyVideoRef.current);
     }
     const hiddenVideo = beautyVideoRef.current;
     
@@ -445,9 +455,11 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
     }
 
     let isPlaying = false;
-    hiddenVideo.onloadedmetadata = () => {
-        canvas.width = hiddenVideo.videoWidth;
-        canvas.height = hiddenVideo.videoHeight;
+    const startBeautyFilter = () => {
+        if (hiddenVideo.videoWidth) {
+           canvas.width = hiddenVideo.videoWidth;
+           canvas.height = hiddenVideo.videoHeight;
+        }
         hiddenVideo.play().then(() => { isPlaying = true; }).catch(console.error);
         
         ctx!.filter = mode === "soft"
@@ -476,10 +488,16 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
                 if (canvas.height !== hiddenVideo.videoHeight) canvas.height = hiddenVideo.videoHeight;
                 ctx!.drawImage(hiddenVideo, 0, 0, canvas.width, canvas.height);
             }
-            beautyAnimationRef.current = requestAnimationFrame(drawLoop);
+            beautyAnimationRef.current = window.setTimeout(drawLoop, 33);
         };
         drawLoop();
     };
+
+    if (hiddenVideo.readyState >= 2) { // HAVE_CURRENT_DATA
+        startBeautyFilter();
+    } else {
+        hiddenVideo.onloadedmetadata = startBeautyFilter;
+    }
 
     if (!beautyStreamRef.current || !beautyTrackRef.current || beautyTrackRef.current.readyState === 'ended') {
         try {
@@ -505,9 +523,21 @@ export function CallOverlay({ currentUser }: CallOverlayProps) {
       if (!navigator.mediaDevices?.enumerateDevices) return;
       const devices = await navigator.mediaDevices.enumerateDevices();
       const cameras = devices.filter((device) => device.kind === "videoinput");
-      setVideoInputs(cameras);
-      if (!selectedVideoDeviceId && cameras[0]?.deviceId) {
-        setSelectedVideoDeviceId(cameras[0].deviceId);
+      
+      const uniqueCameras: MediaDeviceInfo[] = [];
+      const seenIds = new Set<string>();
+      for (const cam of cameras) {
+          if (cam.deviceId && !seenIds.has(cam.deviceId)) {
+              seenIds.add(cam.deviceId);
+              uniqueCameras.push(cam);
+          }
+      }
+      // If none had deviceId (e.g. permission not granted), fallback to all cameras
+      const finalCameras = uniqueCameras.length > 0 ? uniqueCameras : cameras;
+      
+      setVideoInputs(finalCameras);
+      if (!selectedVideoDeviceId && finalCameras[0]?.deviceId) {
+        setSelectedVideoDeviceId(finalCameras[0].deviceId);
       }
     } catch (err) {
       console.error("Could not enumerate cameras", err);

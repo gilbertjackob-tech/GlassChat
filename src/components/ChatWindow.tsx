@@ -585,6 +585,7 @@ export function ChatWindow({
     }
   };
 
+  const isRecordingRef = useRef(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -594,8 +595,14 @@ export function ChatWindow({
 
   const startRecording = async (e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
+    if (isRecordingRef.current) return;
+    isRecordingRef.current = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!isRecordingRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
@@ -608,18 +615,20 @@ export function ChatWindow({
       };
 
       mediaRecorder.onstop = async () => {
+        const mimeType = mediaRecorder.mimeType || "audio/webm";
         const audioBlob = new Blob(audioChunksRef.current, {
-          type: "audio/webm",
+          type: mimeType,
         });
 
         streamRef.current?.getTracks().forEach((track) => track.stop());
 
         if (audioChunksRef.current.length > 0) {
           try {
+            const ext = mimeType.includes("mp4") ? "mp4" : mimeType.includes("ogg") ? "ogg" : "webm";
             const audioFile = new File(
               [audioBlob],
-              `audio_${Date.now()}.webm`,
-              { type: "audio/webm" },
+              `audio_${Date.now()}.${ext}`,
+              { type: mimeType },
             );
             const uploaded = await uploadFile(audioFile, currentUser.id);
 
@@ -640,6 +649,7 @@ export function ChatWindow({
           }
         }
         setIsRecording(false);
+        isRecordingRef.current = false;
         if (timerRef.current) clearInterval(timerRef.current);
       };
 
@@ -652,12 +662,15 @@ export function ChatWindow({
       }, 1000);
     } catch (err) {
       console.error("Error accessing microphone:", err);
+      isRecordingRef.current = false;
+      setIsRecording(false);
     }
   };
 
   const stopRecording = (e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
-    if (mediaRecorderRef.current && isRecording) {
+    isRecordingRef.current = false;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
   };
