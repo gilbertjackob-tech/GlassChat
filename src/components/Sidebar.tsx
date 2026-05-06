@@ -85,6 +85,12 @@ export function Sidebar({
   const [newContactPhone, setNewContactPhone] = useState("");
   const [usersToChat, setUsersToChat] = useState<User[]>([]);
   const [userSearchQuery, setUserSearchQuery] = useState("");
+  const [avatarCropSource, setAvatarCropSource] = useState("");
+  const [avatarCropFileName, setAvatarCropFileName] = useState("avatar.jpg");
+  const [avatarCropZoom, setAvatarCropZoom] = useState(1.15);
+  const [avatarCropX, setAvatarCropX] = useState(50);
+  const [avatarCropY, setAvatarCropY] = useState(50);
+  const [isSavingAvatar, setIsSavingAvatar] = useState(false);
 
   const {
     theme,
@@ -503,6 +509,95 @@ export function Sidebar({
     }, 300);
   };
 
+  const openAvatarCropper = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAvatarCropSource(String(reader.result || ""));
+      setAvatarCropFileName(file.name || "avatar.jpg");
+      setAvatarCropZoom(1.15);
+      setAvatarCropX(50);
+      setAvatarCropY(50);
+    };
+    reader.onerror = () => {
+      alert("Failed to read selected photo. Please try another image.");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const buildCroppedAvatarFile = async () => {
+    if (!avatarCropSource) throw new Error("No avatar selected");
+    const image = new Image();
+    image.src = avatarCropSource;
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("Could not load selected image"));
+    });
+
+    const size = 640;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Could not prepare avatar crop");
+
+    const baseScale = Math.max(size / image.width, size / image.height);
+    const scale = baseScale * avatarCropZoom;
+    const drawWidth = image.width * scale;
+    const drawHeight = image.height * scale;
+    const maxOffsetX = Math.max(0, drawWidth - size);
+    const maxOffsetY = Math.max(0, drawHeight - size);
+    const dx = -maxOffsetX * (avatarCropX / 100);
+    const dy = -maxOffsetY * (avatarCropY / 100);
+
+    ctx.fillStyle = "#0f172a";
+    ctx.fillRect(0, 0, size, size);
+    ctx.drawImage(image, dx, dy, drawWidth, drawHeight);
+
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (result) => (result ? resolve(result) : reject(new Error("Could not crop avatar"))),
+        "image/jpeg",
+        0.9,
+      );
+    });
+    const safeName = avatarCropFileName.replace(/\.[^.]+$/, "") || "avatar";
+    return new File([blob], `${safeName}_profile.jpg`, { type: "image/jpeg" });
+  };
+
+  const saveCroppedAvatar = async () => {
+    setIsSavingAvatar(true);
+    try {
+      const croppedFile = await buildCroppedAvatarFile();
+      const { uploadFile } = await import("../api");
+      const data = await uploadFile(croppedFile, currentUser.id);
+      const newAvatarUrl = data.url;
+
+      const res = await fetch(`${API_BASE}/users/${currentUser.id}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ avatar: newAvatarUrl }),
+      });
+      if (res.status === 404) {
+        localStorage.removeItem("whatsclone_user_real");
+        alert("Your local user no longer exists. Please register again.");
+        onUpdateUser(null);
+        return;
+      }
+      if (!res.ok) throw new Error("Failed to update profile avatar on server");
+
+      const updatedUser = await res.json();
+      const nextUser = { ...currentUser, ...updatedUser, avatar: newAvatarUrl };
+      localStorage.setItem("whatsclone_user_real", JSON.stringify(nextUser));
+      onUpdateUser(nextUser);
+      setAvatarCropSource("");
+    } catch (err) {
+      console.error("Failed to update avatar", err);
+      alert("Failed to update profile photo. Please try again.");
+    } finally {
+      setIsSavingAvatar(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-white dark:bg-slate-800 z-10 w-full relative overflow-hidden shadow-sm transition-colors duration-300">
       {/* Header */}
@@ -753,36 +848,10 @@ export function Sidebar({
                 type="file"
                 className="hidden"
                 accept="image/*"
-                onChange={async (e) => {
+                onChange={(e) => {
                   const file = e.target.files?.[0];
-                  if (!file) return;
-                  try {
-                    const { uploadFile } = await import("../api");
-                    const data = await uploadFile(file, currentUser.id);
-                    const newAvatarUrl = data.url;
-                    
-                    const res = await fetch(`${API_BASE}/users/${currentUser.id}/profile`, {
-                      method: "PUT",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ avatar: newAvatarUrl })
-                    });
-                    if (res.status === 404) {
-                      localStorage.removeItem("whatsclone_user_real");
-                      alert("Your local user no longer exists. Please register again.");
-                      onUpdateUser(null);
-                    } else if (res.ok) {
-                      onUpdateUser({
-                        ...currentUser,
-                        avatar: newAvatarUrl,
-                      });
-                    } else {
-                      console.error("Failed to update profile avatar on server");
-                      alert("Failed to update profile photo. Please try again.");
-                    }
-                  } catch (err) {
-                    console.error("Failed to upload avatar", err);
-                    alert("Failed to update profile photo. Please try again.");
-                  }
+                  e.currentTarget.value = "";
+                  if (file) openAvatarCropper(file);
                 }}
               />
             </label>
@@ -828,6 +897,81 @@ export function Sidebar({
           </div>
         </div>
       </div>
+
+      {avatarCropSource && (
+        <div className="absolute inset-0 z-40 bg-black/70 flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-white dark:bg-[#202c33] rounded-2xl shadow-2xl border border-slate-200 dark:border-[#2f3b43] overflow-hidden">
+            <div className="p-4 flex items-center justify-between border-b border-slate-100 dark:border-[#2f3b43]">
+              <h3 className="font-bold text-slate-900 dark:text-[#e9edef]">
+                Set profile photo
+              </h3>
+              <button
+                onClick={() => setAvatarCropSource("")}
+                className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-[#111b21]"
+                title="Cancel"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5">
+              <div className="mx-auto w-56 h-56 rounded-full overflow-hidden bg-slate-900 border-4 border-white dark:border-slate-700 shadow-inner">
+                <img
+                  src={avatarCropSource}
+                  alt="Crop preview"
+                  className="w-full h-full object-cover"
+                  style={{
+                    transform: `scale(${avatarCropZoom})`,
+                    transformOrigin: `${avatarCropX}% ${avatarCropY}%`,
+                  }}
+                />
+              </div>
+              <div className="mt-5 space-y-4">
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Zoom
+                  <input
+                    type="range"
+                    min="1"
+                    max="2.5"
+                    step="0.01"
+                    value={avatarCropZoom}
+                    onChange={(event) => setAvatarCropZoom(Number(event.target.value))}
+                    className="mt-2 w-full accent-[#00a884]"
+                  />
+                </label>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Horizontal position
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={avatarCropX}
+                    onChange={(event) => setAvatarCropX(Number(event.target.value))}
+                    className="mt-2 w-full accent-[#00a884]"
+                  />
+                </label>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Vertical position
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={avatarCropY}
+                    onChange={(event) => setAvatarCropY(Number(event.target.value))}
+                    className="mt-2 w-full accent-[#00a884]"
+                  />
+                </label>
+              </div>
+              <button
+                onClick={() => void saveCroppedAvatar()}
+                disabled={isSavingAvatar}
+                className="mt-6 w-full py-3 rounded-xl bg-[#00a884] hover:bg-[#008f72] disabled:bg-slate-400 text-white font-bold transition-colors"
+              >
+                {isSavingAvatar ? "Saving..." : "Save photo"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Settings Pane */}
       <div

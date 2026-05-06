@@ -76,7 +76,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [currentUser?.id]);
+  }, [currentUser]);
 
   if (!currentUser) {
     return <AuthScreen onAuthSuccess={setCurrentUser} />;
